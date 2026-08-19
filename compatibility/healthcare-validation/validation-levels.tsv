@@ -1,0 +1,6 @@
+level	gate	status	claim_boundary
+1	well-formed SOAP + payload namespace routing for HL7 v3 CDA and FHIR XML	implemented	transport/routing only
+2	HL7 v3 and CDA R2 XSD	not enabled	schema validity only
+3	C-CDA schematron and FHIR official validator/packages	not enabled	profile/version validity only
+4	IHE/Gazelle profile validation	not enabled	profile-specific test result only
+5	terminology and clinical/business constraints	not implemented	clinical conformance requires external governance

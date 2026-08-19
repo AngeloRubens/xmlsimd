@@ -1,0 +1,12 @@
+family	artifact	version	url	sha256	license	status
+HL7 v2	ER7 messages	2.x	https://www.hl7.org/implement/standards/product_brief.cfm?product_id=185	N/A	HL7 terms	excluded-non-xml
+HL7 v2	v2.xml encoding	version-specific	https://www.hl7.org/implement/standards/product_brief.cfm?product_id=185	REQUIRED_BEFORE_ENABLE	license-review-required	inventory-only
+HL7 v3	Normative Edition XML schemas	version-specific	https://www.hl7.org/implement/standards/product_brief.cfm?product_id=186	REQUIRED_BEFORE_ENABLE	license-review-required	blocked-no-download
+CDA	CDA R2 core schema	R2	https://www.hl7.org/implement/standards/product_brief.cfm?product_id=7	REQUIRED_BEFORE_ENABLE	license-review-required	blocked-no-download
+C-CDA	HL7 C-CDA examples	R2.1	https://github.com/HL7/C-CDA-Examples	REQUIRED_BEFORE_ENABLE	CC0-1.0	eligible-after-commit-and-hash-pin
+C-CDA	CDA examples + schematron	3.0/4.0 development corpus	https://github.com/HL7/CDA-Examples	REQUIRED_BEFORE_ENABLE	license-file-must-be-verified	blocked-no-download
+FHIR XML	FHIR core package	R4 4.0.1	https://packages.fhir.org/packages/hl7.fhir.r4.core/4.0.1	REQUIRED_BEFORE_ENABLE	CC0 with HL7/FHIR trademark terms	eligible-after-package-hash-pin
+FHIR XML	FHIR corexml package	R5 5.0.0	https://hl7.org/fhir/R5/downloads.html	REQUIRED_BEFORE_ENABLE	CC0 with HL7/FHIR trademark terms	eligible-after-artifact-hash-pin
+FHIR XML	HL7 validator CLI	version must be pinned	https://github.com/hapifhir/org.hl7.fhir.core/releases	REQUIRED_BEFORE_ENABLE	license-file-must-be-verified	blocked-no-download
+IHE/Gazelle	public validation services/profiles	deployed service version	https://gazelle.ihe.net/EVSClient	N/A	remote service terms and corpus reuse unclear	remote-manual-only
+IHE profiles	published technical frameworks	publication-specific	https://profiles.ihe.net/	REQUIRED_BEFORE_ENABLE	publication/corpus terms must be reviewed	blocked-no-download

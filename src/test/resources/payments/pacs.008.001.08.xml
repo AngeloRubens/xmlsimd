@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+  <FIToFICstmrCdtTrf><GrpHdr><MsgId>PACS-008-001</MsgId><NbOfTxs>3</NbOfTxs><CtrlSum>900.25</CtrlSum></GrpHdr>
+    <CdtTrfTxInf><CdtrAcct><Id><IBAN>DE89370400440532013000</IBAN></Id></CdtrAcct>
+      <CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt></CdtTrfTxInf>
+  </FIToFICstmrCdtTrf>
+</Document>

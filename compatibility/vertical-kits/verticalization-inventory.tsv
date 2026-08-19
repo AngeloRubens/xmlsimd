@@ -1,0 +1,15 @@
+family	format	fixture	fast_generic_equivalence	fixed	auto	thread_safe	status
+soap	SOAP 1.1	src/test/resources/soap/standard-soap11.xml	yes	yes	yes	yes	covered
+healthcare	SOAP 1.2 + IHE/HL7 v3	src/test/resources/healthcare/ihe-xcpd-soap12.xml	yes	yes	yes	yes	covered
+payments	ISO 20022 pain.001	src/test/resources/payments/pain.001.001.09.xml	yes	yes	yes	yes	covered
+payments	ISO 20022 pacs.008	src/test/resources/payments/pacs.008.001.08.xml	yes	yes	yes	yes	covered
+payments	ISO 20022 camt.053	src/test/resources/payments/camt.053.001.08.xml	yes	yes	yes	yes	covered
+healthcare	CDA	-	no	no	no	no	declared-enum-without-fixture
+healthcare	FHIR XML	-	no	no	no	no	declared-enum-without-fixture
+finance	FIXML	-	no	no	no	no	declared-enum-without-fixture
+finance	FpML	-	no	no	no	no	declared-enum-without-fixture
+payments	UBL payment	-	no	no	no	no	declared-enum-without-fixture
+finance	SWIFT MX beyond ISO message tokens	-	no	no	no	no	declared-enum-without-fixture
+finance	EBICS	-	no	no	no	no	declared-enum-without-fixture
+reporting	XBRL	-	no	no	no	no	not-implemented
+security	SAML	-	no	no	no	no	not-implemented

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.09">
+  <CstmrCdtTrfInitn><GrpHdr><MsgId>SIMDXML-20260819-001</MsgId><NbOfTxs>2</NbOfTxs><CtrlSum>1250.75</CtrlSum></GrpHdr>
+    <PmtInf><DbtrAcct><Id><IBAN>IT60X0542811101000000123456</IBAN></Id></DbtrAcct>
+      <DbtrAgt><FinInstnId><BICFI>BPPIITRRXXX</BICFI></FinInstnId></DbtrAgt></PmtInf>
+  </CstmrCdtTrfInitn>
+</Document>

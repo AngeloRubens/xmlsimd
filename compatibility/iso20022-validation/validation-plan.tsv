@@ -1,0 +1,6 @@
+level	gate	current_status	claim_boundary
+1	XML well-formedness + exact namespace/version routing	implemented for pain.001.001.09 pacs.008.001.08 camt.053.001.08	format routing only
+2	official ISO XSD validation for pain.001 pain.002 pacs.008 pacs.002 camt.053 camt.054	blocked pending immutable artifact URLs and hashes	XSD-valid for the exact message version only
+3	EPC 2025 TVS for SCT SCT Inst SDD Core/B2B C2PSP and Inter-PSP	blocked pending EPC license and immutable hashes	TVS-valid does not establish complete SEPA compliance
+4	positive and negative fixtures per schema	not implemented	fixture outcome only
+4	EPC business rules outside XSD	not implemented	requires explicit rule engine and dated rulebook traceability

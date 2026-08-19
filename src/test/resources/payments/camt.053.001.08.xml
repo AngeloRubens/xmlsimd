@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">
+  <BkToCstmrStmt><GrpHdr><MsgId>CAMT-053-001</MsgId></GrpHdr><Stmt>
+    <NbOfTxs>4</NbOfTxs><CtrlSum>1200.00</CtrlSum>
+    <Acct><Id><IBAN>FR7630006000011234567890189</IBAN></Id></Acct>
+    <Svcr><FinInstnId><BICFI>AGRIFRPPXXX</BICFI></FinInstnId></Svcr>
+  </Stmt></BkToCstmrStmt>
+</Document>

@@ -1,0 +1,66 @@
+name: Java EE 8 provider integration
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'compatibility/java8-baseline-check/**'
+      - 'integrations/simdxml-jaxb-javax-provider/**'
+      - 'integrations/server-smoke-javaee8/**'
+      - 'integrations/pom.xml'
+      - '.github/workflows/javaee8-openliberty.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'compatibility/java8-baseline-check/**'
+      - 'integrations/simdxml-jaxb-javax-provider/**'
+      - 'integrations/server-smoke-javaee8/**'
+      - 'integrations/pom.xml'
+
+jobs:
+  quarkus-jaxb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Run Quarkus JAXB provider test
+        run: >-
+          mvn -B -ntp -f integrations/pom.xml -Pquarkus-it
+          -pl :simdxml-server-smoke-quarkus -am test
+
+  tomcat9-javaee8:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Deploy packaged WAR to downloaded Tomcat 9
+        run: >-
+          mvn -B -ntp -f integrations/pom.xml
+          -pl :simdxml-server-smoke-javaee8 -am
+          verify -Ptomcat-it
+
+  openliberty-javaee8:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Run Java EE 8 container provider test
+        run: >-
+          mvn -B -ntp -f integrations/pom.xml
+          -pl :simdxml-server-smoke-javaee8 -am
+          verify -Popenliberty-it

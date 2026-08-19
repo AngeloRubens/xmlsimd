@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<server description="simdxml Java EE 8 provider integration test">
+    <featureManager>
+        <feature>servlet-4.0</feature>
+        <feature>jaxb-2.2</feature>
+    </featureManager>
+    <httpEndpoint id="defaultHttpEndpoint" host="127.0.0.1" httpPort="${http.port}"/>
+    <webApplication id="simdxml-smoke" location="simdxml-javaee8-smoke.war" contextRoot="/simdxml-smoke">
+        <classloader delegation="parentLast" apiTypeVisibility="spec,ibm-api,api,stable,third-party"/>
+    </webApplication>
+</server>

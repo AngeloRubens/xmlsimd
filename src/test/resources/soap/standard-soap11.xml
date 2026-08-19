@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:wsa="http://www.w3.org/2005/08/addressing"
+                  xmlns:ord="urn:example:orders:v1">
+  <soapenv:Header>
+    <wsa:Action soapenv:mustUnderstand="1">urn:example:orders:GetOrder</wsa:Action>
+    <wsa:MessageID>urn:uuid:8d83a1b0-8618-4b14-a8e7-d03843c49670</wsa:MessageID>
+    <wsa:To>https://api.example.invalid/orders</wsa:To>
+    <ord:ClientContext>
+      <ord:Tenant>retail-eu</ord:Tenant>
+      <ord:CorrelationId>benchmark-000001</ord:CorrelationId>
+    </ord:ClientContext>
+  </soapenv:Header>
+  <soapenv:Body>
+    <ord:GetOrderRequest>
+      <ord:OrderId>47110815</ord:OrderId>
+      <ord:IncludeLines>true</ord:IncludeLines>
+      <ord:Locale>it-IT</ord:Locale>
+    </ord:GetOrderRequest>
+  </soapenv:Body>
+</soapenv:Envelope>

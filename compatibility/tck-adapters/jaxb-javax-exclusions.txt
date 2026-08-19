@@ -1,0 +1,3 @@
+# path-pattern | classification | reason
+jaxb-tck/tests/api/signaturetest/sig/jakarta.xml.bind.sig | normative-difference | Jakarta 4 API signatures are not JAXB 2.3 API signatures
+# Add every further exclusion here. No silent excludes, globs, or implementation-specific failures.

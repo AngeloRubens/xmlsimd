@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>org.simdxml</groupId>
+    <artifactId>simdxml-integrations</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>simdxml integration bridges</name>
+    <modules>
+        <module>..</module>
+        <module>../compatibility/java8-baseline-check</module>
+        <module>simdxml-jaxb-provider</module>
+        <module>simdxml-jaxb-javax-provider</module>
+        <module>server-smoke-javaee8</module>
+    </modules>
+    <profiles>
+        <profile>
+            <id>quarkus-it</id>
+            <modules><module>server-smoke-quarkus</module></modules>
+        </profile>
+    </profiles>
+</project>

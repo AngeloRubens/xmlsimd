@@ -1,0 +1,19 @@
+# W3C XML TS 20130923 IDs accepted by simdxml although TYPE=not-wf.
+# Keep explicit: removing an ID must mean that the corresponding parser check was implemented.
+not-wf-sa-014
+not-wf-sa-025
+not-wf-sa-026
+not-wf-sa-029
+not-wf-sa-030
+not-wf-sa-031
+not-wf-sa-032
+not-wf-sa-033
+not-wf-sa-070
+not-wf-sa-093
+not-wf-sa-094
+not-wf-sa-095
+not-wf-sa-096
+not-wf-sa-097
+not-wf-sa-098
+not-wf-sa-099
+not-wf-sa-100

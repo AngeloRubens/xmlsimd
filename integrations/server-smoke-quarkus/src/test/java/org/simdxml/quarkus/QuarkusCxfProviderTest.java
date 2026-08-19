@@ -18,8 +18,11 @@ final class QuarkusCxfProviderTest {
 
     @Test
     void cxfSoapEndpointUsesSimdxmlJaxbProvider() throws Exception {
-        String envelope = "<soap:Envelope xmlns:soap='http://schemas.xmlsoap.org/soap/envelope/' "
-                + "xmlns:t='urn:simdxml:test'><soap:Body><t:provider/></soap:Body></soap:Envelope>";
+        // Keep the application namespace declaration on the payload element as well. CXF may
+        // hand the JAXB provider a reader positioned on the body child, without exposing parent
+        // namespace declarations as attributes of that fragment.
+        String envelope = "<soap:Envelope xmlns:soap='http://schemas.xmlsoap.org/soap/envelope/'>"
+                + "<soap:Body><t:provider xmlns:t='urn:simdxml:test'/></soap:Body></soap:Envelope>";
         HttpURLConnection connection = (HttpURLConnection) endpoint.openConnection();
         connection.setRequestMethod("POST");
         connection.setRequestProperty("Content-Type", "text/xml; charset=UTF-8");

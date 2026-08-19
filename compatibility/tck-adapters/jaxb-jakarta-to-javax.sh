@@ -66,8 +66,10 @@ official compatibility or certification claim. Upstream copyright, license and
 notices remain applicable. See simdxml's tck-adapters README and exclusions.
 EOF
 
-residual=$(rg -l 'jakarta\.xml\.bind|jakarta\.activation' "$output_dir/jaxb-tck/tests" \
-    -g '*.java' -g '*.xml' -g '*.xsd' -g '*.xjb' -g '*.properties' 2>/dev/null || true)
+residual=$(find "$output_dir/jaxb-tck/tests" -type f \( \
+    -name '*.java' -o -name '*.xml' -o -name '*.xsd' -o -name '*.xjb' -o \
+    -name '*.properties' \) -exec grep -lE 'jakarta\.xml\.bind|jakarta\.activation' {} + \
+    2>/dev/null || true)
 if [ -n "$residual" ]; then
     echo "unconverted Jakarta API references remain:" >&2
     echo "$residual" >&2

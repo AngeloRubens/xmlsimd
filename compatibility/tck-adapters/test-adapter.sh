@@ -23,11 +23,11 @@ cat > "$fixture/pom.xml" <<'EOF'
 EOF
 
 "$adapter_dir/jaxb-jakarta-to-javax.sh" "$fixture" "$output"
-rg -q 'import javax\.xml\.bind\.JAXBContext' "$output/jaxb-tck/tests/sample/Model.java"
-rg -q 'import javax\.activation\.DataHandler' "$output/jaxb-tck/tests/sample/Model.java"
-rg -q 'http://java.sun.com/xml/ns/jaxb' "$output/jaxb-tck/tests/sample/binding.xjb"
-rg -q 'version="2.1"' "$output/jaxb-tck/tests/sample/binding.xjb"
-rg -q '<groupId>javax.xml.bind</groupId><artifactId>jaxb-api</artifactId>' "$output/pom.xml"
+grep -Eq 'import javax\.xml\.bind\.JAXBContext' "$output/jaxb-tck/tests/sample/Model.java"
+grep -Eq 'import javax\.activation\.DataHandler' "$output/jaxb-tck/tests/sample/Model.java"
+grep -Eq 'http://java.sun.com/xml/ns/jaxb' "$output/jaxb-tck/tests/sample/binding.xjb"
+grep -Eq 'version="2.1"' "$output/jaxb-tck/tests/sample/binding.xjb"
+grep -Eq '<groupId>javax.xml.bind</groupId><artifactId>jaxb-api</artifactId>' "$output/pom.xml"
 test -f "$output/SIMDXML-JAVAX-ADAPTATION.txt"
 test -f "$output/NOTICE"
 echo 'JAXB Jakarta-to-Javax adapter smoke test passed'

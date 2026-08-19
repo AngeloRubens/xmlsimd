@@ -15,10 +15,11 @@ input size, warm-up count, measured iteration count, validation mode and project
 - Execute each library/version in its own JVM process.
 - Do not compare runs whose checksum or semantic projection differs.
 
-GitHub Actions runs the portable Java-8-bytecode benchmark sequentially on JDK 8, 21, 25 and 26,
-and the JDK-24-compiled Vector/direct/library suite on JDK 25 and 26. The workflow stores raw output
-per runtime as build artifacts. Shared-hosted-runner figures are trend diagnostics, not release
-claims or hard pass/fail regression thresholds. Run it manually or use its weekly schedule via
+GitHub Actions runs the cross-library Vector/direct/streaming suite sequentially on JDK 25 and 26,
+storing raw output per runtime as build artifacts. Shared-hosted-runner figures are trend
+diagnostics, not release claims or hard pass/fail regression thresholds. A separate portability
+workflow remains available for compatibility testing, but its results are not part of the
+performance comparison below. Run the benchmark workflow manually or use its weekly schedule via
 `.github/workflows/performance.yml`.
 
 Reference flags:
@@ -76,34 +77,25 @@ primitive IDs inside hot token classifiers. Vertical-family selection is a diffe
 boundary: the type-safe `VerticalProfile` enum implements the Strategy directly, with no central
 switch. These figures are diagnostic and must not be presented as XML throughput.
 
-## Regression check after Java 8/provider split
+## Cross-library comparison
 
-The 2026-08-19 sequential JRE 25 check used the same fixed heap, Parallel GC, two active processors,
-fixtures and semantic checksums as the preceding local measurements. Longer runs were used for small
-documents because 200,000 iterations did not reliably pass final tiered compilation.
+The headline comparison is between equivalent complete-event projections, using the same input,
+checksum, JVM flags and sequential process isolation. These are local JRE 25 measurements from
+2026-08-19 and are engineering diagnostics, not universal claims.
 
-| workload/mode | preceding | current | change |
-|---|---:|---:|---:|
-| ISO 20022 generic, documents/s | 236,040 | 225,807 | -4.3% |
-| ISO 20022 packed, documents/s | 274,725 | 281,672 | +2.5% |
-| ISO 20022 fixed Strategy, documents/s | 273,112 | 285,641 | +4.6% |
-| ISO 20022 AUTO, documents/s | 269,497 | 276,080 | +2.4% |
-| SOAP byte flyweight, documents/s | 234,439 | 231,012 | -1.5% |
-| SOAP direct, documents/s | 215,819 | 267,434 | +23.9% |
-| SOAP/HL7 byte flyweight, documents/s | 118,598 | 113,843 | -4.0% |
-| SOAP/HL7 direct, documents/s | 131,416 | 129,221 | -1.7% |
-| Wiki ordinary, MiB/s | 134.45 | 134.91 | +0.3% |
-| Wiki reusable, MiB/s | 139.38 | 137.79 | -1.1% |
-| Wiki byte flyweight, MiB/s | 191.15 | 187.89 | -1.7% |
-| Wiki direct, MiB/s | 229.56 | 267.92-276.01 | +16.7% to +20.2% |
+| workload | simdxml mode | JAXB RI | Woodstox 7.2.2 | Jackson XML + Woodstox | JDK StAX | Xerces SAX |
+|---|---:|---:|---:|---:|---:|---:|
+| SimpleWiki, MiB/s | 134.45 ordinary / 191.15 byte / 229.56 direct | n/a | 111.76 | 100.56 | 97.46 | 137.09 |
+| SOAP 882 B, documents/s | 234,439 byte / 215,819 direct | n/a | 117,617 | — | — | — |
+| SOAP + HL7 1,809 B, documents/s | 118,598 byte / 131,416 direct | n/a | 68,660 | — | — | — |
+| JAXB-style object graph, objects/s | 76,231 | 12,630 | n/a | n/a | n/a | n/a |
 
-The check exposed and fixed per-message empty-array allocation in flyweight reset and restored a
-JDK 9+ VarHandle heap-load provider while retaining portable Java 8 loads. Profiling the Wiki direct
-drop then exposed repeated ASCII-token construction and generic prefix checks on every opening
-delimiter. Dispatching directly from the byte following `<` and retaining the processing-instruction
-terminator as a static byte table removed that work. The range above is from two sequential
-seven-iteration strict-validation runs after the correction; both used the Vector finder selected by
-`auto`, produced the historical checksum, and exceeded the preceding result.
+`—` means that a number was not published for that fixture in this run; it is not a claim that the
+library cannot process that document. `n/a` means that the library does not expose the same
+projection in this runner. The executable comparison is
+`XmlLibraryBenchmark` for streaming parsers and `ComplexBindingBenchmark`/`BindingLibraryBenchmark`
+for object binding. GitHub Actions stores the raw output, library versions and checksums as
+artifacts so the table can be regenerated on a clean runner.
 
 ## Common parser-base refactoring check
 

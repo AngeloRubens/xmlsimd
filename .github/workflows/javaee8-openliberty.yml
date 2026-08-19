@@ -6,16 +6,24 @@ on:
       - 'src/**'
       - 'compatibility/java8-baseline-check/**'
       - 'integrations/simdxml-jaxb-javax-provider/**'
+      - 'integrations/simdxml-jaxb-provider/**'
       - 'integrations/server-smoke-javaee8/**'
+      - 'integrations/server-smoke-quarkus/**'
       - 'integrations/pom.xml'
+      - 'pom.xml'
+      - 'ci/**'
       - '.github/workflows/javaee8-openliberty.yml'
   pull_request:
     paths:
       - 'src/**'
       - 'compatibility/java8-baseline-check/**'
       - 'integrations/simdxml-jaxb-javax-provider/**'
+      - 'integrations/simdxml-jaxb-provider/**'
       - 'integrations/server-smoke-javaee8/**'
+      - 'integrations/server-smoke-quarkus/**'
       - 'integrations/pom.xml'
+      - 'pom.xml'
+      - 'ci/**'
 
 jobs:
   quarkus-jaxb:
@@ -26,12 +34,15 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '24'
           cache: maven
       - name: Run Quarkus JAXB provider test
         run: >-
           mvn -B -ntp -f integrations/pom.xml -Pquarkus-it
           -pl :simdxml-server-smoke-quarkus -am test
+      - name: Publish Quarkus test summary
+        if: always()
+        run: sh ci/render-test-summary.sh "Quarkus JAXB/CXF integration"
 
   tomcat9-javaee8:
     runs-on: ubuntu-latest
@@ -41,13 +52,16 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '24'
           cache: maven
       - name: Deploy packaged WAR to downloaded Tomcat 9
         run: >-
           mvn -B -ntp -f integrations/pom.xml
           -pl :simdxml-server-smoke-javaee8 -am
           verify -Ptomcat-it
+      - name: Publish Tomcat test summary
+        if: always()
+        run: sh ci/render-test-summary.sh "Tomcat Java EE 8 integration"
 
   openliberty-javaee8:
     runs-on: ubuntu-latest
@@ -57,10 +71,13 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '24'
           cache: maven
       - name: Run Java EE 8 container provider test
         run: >-
           mvn -B -ntp -f integrations/pom.xml
           -pl :simdxml-server-smoke-javaee8 -am
           verify -Popenliberty-it
+      - name: Publish Open Liberty test summary
+        if: always()
+        run: sh ci/render-test-summary.sh "Open Liberty Java EE 8 integration"

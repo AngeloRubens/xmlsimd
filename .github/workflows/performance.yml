@@ -12,6 +12,7 @@ on:
       - 'compatibility/**'
       - 'benchmarks/**'
       - 'pom.xml'
+      - 'ci/**'
       - '.github/workflows/performance.yml'
 
 concurrency:
@@ -59,7 +60,7 @@ jobs:
               java "${flags[@]}" -cp "$cp" org.simdxml.compat.PortablePerformanceBenchmark "$mode" "$validation" 5000 | tee -a "$result"
             done
           done
-          cat "$result" >> "$GITHUB_STEP_SUMMARY"
+          sh ci/render-benchmark-summary.sh "Portable SWAR benchmark / JDK ${{ matrix.java }}" "$result"
       - uses: actions/upload-artifact@v4
         with:
           name: portable-jdk-${{ matrix.java }}
@@ -94,7 +95,7 @@ jobs:
         run: |
           chmod +x benchmarks/run-ci-benchmarks.sh
           JAVA_CMD="$JAVA_HOME/bin/java" RESULTS_FILE="target/benchmark-jdk-${{ matrix.java }}.txt" benchmarks/run-ci-benchmarks.sh
-          cat "target/benchmark-jdk-${{ matrix.java }}.txt" >> "$GITHUB_STEP_SUMMARY"
+          sh ci/render-benchmark-summary.sh "Library comparison / JDK ${{ matrix.java }}" "target/benchmark-jdk-${{ matrix.java }}.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: accelerated-jdk-${{ matrix.java }}

@@ -29,6 +29,11 @@
         <dependency><groupId>io.quarkus</groupId><artifactId>quarkus-rest</artifactId></dependency>
         <dependency><groupId>io.quarkiverse.cxf</groupId><artifactId>quarkus-cxf</artifactId></dependency>
         <dependency><groupId>io.quarkus</groupId><artifactId>quarkus-jaxb</artifactId></dependency>
+        <!-- Cold-path schema generation is delegated to the standard JAXB RI. -->
+        <dependency>
+            <groupId>org.glassfish.jaxb</groupId><artifactId>jaxb-runtime</artifactId>
+            <version>4.0.9</version><scope>runtime</scope>
+        </dependency>
         <dependency><groupId>io.quarkus</groupId><artifactId>quarkus-junit</artifactId><scope>test</scope></dependency>
     </dependencies>
     <build><plugins>

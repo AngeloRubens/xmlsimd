@@ -29,6 +29,29 @@ Reference flags:
 -XX:+AlwaysPreTouch -XX:+UseParallelGC -XX:+DisableExplicitGC -XX:-UsePerfData
 ```
 
+## How to read the results
+
+The primary throughput units are **MiB/s** (binary mebibytes per second), **documents/s** and
+**objects/s**. Latency is reported as **ns/document** or **ns/dispatch**. Percentage deltas are
+calculated against the named baseline in the same row; they are not ratios from different runs.
+
+The current headline measurements are local JRE 25 results on a two-core host. They are useful for
+comparing implementations under controlled conditions, not for making hardware-independent claims.
+
+| workload | simdxml result | reference | delta |
+|---|---:|---:|---:|
+| SimpleWiki, ordinary event stream | 134.45 MiB/s | Woodstox 7.2.2: 111.76 MiB/s | **+20.3%** |
+| SimpleWiki, byte-flyweight projection | 191.15 MiB/s | Woodstox 7.2.2: 111.76 MiB/s | **+71.1%** |
+| SimpleWiki, direct-memory projection | 229.56 MiB/s | Woodstox 7.2.2: 111.76 MiB/s | **+105.4%** |
+| SOAP, 882 B | 234,439 documents/s | Woodstox 7.2.2: 117,617 documents/s | **+99.3%** |
+| SOAP + HL7, 1,809 B | 131,416 documents/s direct | Woodstox 7.2.2: 68,660 documents/s | **+91.4%** |
+| JAXB-style unmarshal graph | 22,320 objects/s | JAXB RI: 8,668 objects/s | **+157.6%** |
+| JAXB-style marshal graph | 47,651 objects/s | JAXB RI: 27,142 objects/s | **+75.6%** |
+
+The byte-flyweight and direct-memory rows are deliberately separate from String-based libraries:
+they measure a lower-allocation projection. Checksums and consumed event semantics must match before
+any percentage is reported.
+
 ## Required result groups
 
 1. Complete event stream with materialized names/text: simdxml, JDK StAX, Woodstox and Xerces.
@@ -57,22 +80,24 @@ and off. Both modes parse the complete document and must print the same checksum
 The 2026-08-19 JRE 25 sequential run on `pain.001.001.09.xml` (427 bytes, 200,000 measured
 documents) produced the following diagnostic result with identical checksum:
 
-| mode | documents/s | MiB/s | ns/document |
+| mode | throughput (documents/s) | throughput (MiB/s) | latency (ns/document) |
 |---|---:|---:|---:|
 | generic materialized-name classifier | 236,040 | 96.12 | 4,236.6 |
 | packed/SWAR direct projection | 274,725 | 111.87 | 3,640.0 |
 | fixed `PAYMENTS` Strategy | 273,112 | 111.22 | 3,661.5 |
 | `AUTO` bounded discovery | 269,497 | 109.74 | 3,710.6 |
 
-The packed classifier was 16.4% faster than the generic classifier on this small fixture. These are
-local diagnostic figures, not a cross-library or large-dataset performance claim.
+Relative to the generic classifier, packed/SWAR is **+16.4%** faster, fixed `PAYMENTS` is **+15.7%**
+faster and `AUTO` is **+14.2%** faster. These are local diagnostic figures, not a cross-library or
+large-dataset performance claim.
 
 `DispatchStrategyBenchmark` isolates enum versus integer switch lowering. It is a diagnostic, not a
 parser-throughput claim; each mode runs in a separate sequential JVM and the winner must still be
 confirmed by the complete payment benchmark.
 
 On the local JRE 25/two-core configuration (2026-08-19), the corrected identical-checksum diagnostic
-measured 2.051 ns/dispatch for primitive int and 2.877 ns/dispatch for enum switch. This supports
+measured 2.051 ns/dispatch for primitive int and 2.877 ns/dispatch for enum switch. Enum dispatch
+therefore costs **+40.3% ns/dispatch** in this isolated microbenchmark. This supports
 primitive IDs inside hot token classifiers. Vertical-family selection is a different architectural
 boundary: the type-safe `VerticalProfile` enum implements the Strategy directly, with no central
 switch. These figures are diagnostic and must not be presented as XML throughput.
@@ -85,24 +110,26 @@ checksum, JVM flags and sequential process isolation. These are local JRE 25 mea
 
 | workload | simdxml mode | JAXB RI | Woodstox 7.2.2 | Jackson XML + Woodstox | JDK StAX | Xerces SAX |
 |---|---:|---:|---:|---:|---:|---:|
-| SimpleWiki, MiB/s | 134.45 ordinary / 191.15 byte / 229.56 direct | n/a | 111.76 | 100.56 | 97.46 | 137.09 |
-| SOAP 882 B, documents/s | 234,439 byte / 215,819 direct | n/a | 117,617 | — | — | — |
-| SOAP + HL7 1,809 B, documents/s | 118,598 byte / 131,416 direct | n/a | 68,660 | — | — | — |
-| JAXB-style object graph, objects/s | 76,231 | 12,630 | n/a | n/a | n/a | n/a |
+| SimpleWiki (**MiB/s**) | 134.45 ordinary / 191.15 byte / 229.56 direct | n/a | 111.76 (**+20.3% / +71.1% / +105.4%**) | 100.56 (**+33.7% / +90.1% / +128.2%**) | 97.46 (**+38.0% / +96.1% / +135.5%**) | 137.09 (**-1.9% / +39.4% / +67.5%**) |
+| SOAP 882 B (**documents/s**) | 234,439 byte / 215,819 direct | n/a | 117,617 (**+99.3% / +83.5%**) | — | — | — |
+| SOAP + HL7 1,809 B (**documents/s**) | 118,598 byte / 131,416 direct | n/a | 68,660 (**+72.7% / +91.4%**) | — | — | — |
+| JAXB-style 863-byte book graph (**objects/s**) | 76,231 | 12,630 | n/a | n/a | n/a | n/a |
 
 `—` means that a number was not published for that fixture in this run; it is not a claim that the
 library cannot process that document. `n/a` means that the library does not expose the same
 projection in this runner. The executable comparison is
 `XmlLibraryBenchmark` for streaming parsers and `ComplexBindingBenchmark`/`BindingLibraryBenchmark`
-for object binding. GitHub Actions stores the raw output, library versions and checksums as
-artifacts so the table can be regenerated on a clean runner.
+for object binding. In the SimpleWiki row, each percentage is ordered as ordinary, byte-flyweight,
+direct-memory. In the SOAP rows, the order is byte-flyweight, direct-memory. GitHub Actions stores
+the raw output, library versions and checksums as artifacts so the table can be regenerated on a
+clean runner.
 
-## Common parser-base refactoring check
+## Optimization impact: parser core
 
 After introducing the thin common parser base, shared immutable syntax tables and byte-after-`<`
 dispatch in the heap readers, the same sequential seven-iteration Wiki benchmark produced:
 
-| mode | before refactoring, MiB/s | after refactoring, MiB/s | change |
+| mode | before (MiB/s) | after (MiB/s) | change |
 |---|---:|---:|---:|
 | ordinary reader | 134.91 | 144.86 | +7.4% |
 | reusable reader | 137.79 | 145.47 | +5.6% |
@@ -114,7 +141,7 @@ treated as run-to-run noise; its best result remained 273.61 MiB/s. The root sui
 and the offline compatibility reactor compiled the Java 8 core plus Unsafe, VarHandle, Vector,
 JDK 21 threading and JDK 24 FFM modules.
 
-## Namespace-aware JAXB regression check
+## Compatibility overhead: namespaces
 
 Explicit root, element and attribute namespaces use expanded-name metadata and linked declaration
 scopes. Documents with no namespace declarations stay on a dedicated local-name fast path. After
@@ -124,16 +151,16 @@ the same checksum. The Wiki byte-flyweight benchmark reached 203.62 MiB/s versus
 (+0.7%), also with the same checksum. These small differences are treated as run-to-run variation,
 but demonstrate that namespace support did not impose a measurable regression on unqualified XML.
 
-## Complex JAXB graph
+## Object binding: complex JAXB graph
 
 `ComplexBindingBenchmark` uses a 2,779-byte graph with 16 nested objects, object arrays, primitive
 `int[]`, `List<String>`, `Set<Long>`, property-based getter/setter access and map-style key/value
 entries. Each mode ran in a separate sequential JVM for 50,000 measured operations:
 
-| operation | simd-JAXB, ops/s | JAXB RI, ops/s | simd-JAXB ratio |
+| operation | simd-JAXB (objects/s) | JAXB RI (objects/s) | simd-JAXB delta |
 |---|---:|---:|---:|
-| unmarshal | 22,320 | 8,668 | 2.58x |
-| marshal | 47,651 | 27,142 | 1.76x |
+| unmarshal | 22,320 | 8,668 | **+157.6%** |
+| marshal | 47,651 | 27,142 | **+75.6%** |
 
 Unmarshal and corrected marshal runs produced the same semantic checksum for both implementations.
 The map projection intentionally uses standard entry beans; direct `Map<K,V>` performance will be

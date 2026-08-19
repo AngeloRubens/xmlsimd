@@ -86,6 +86,53 @@ JAXB implementation already supplied by the application server or to the optiona
 keeps CXF, Metro, Axis2, GlassFish and Java EE 8 integration compatible without moving cold-path
 work into the scanner.
 
+### Dependency-only replacement model
+
+The application-facing contract remains the standard JAXB API. Provider selection uses the normal
+ServiceLoader mechanism, so model classes, endpoint classes and calls to `JAXBContext`, `Marshaller`
+and `Unmarshaller` remain unchanged:
+
+```java
+JAXBContext context = JAXBContext.newInstance(Order.class);
+Marshaller marshaller = context.createMarshaller();
+Unmarshaller unmarshaller = context.createUnmarshaller();
+Order value = (Order) unmarshaller.unmarshal(inputStream);
+marshaller.marshal(value, outputStream);
+```
+
+Only dependency selection changes:
+
+| Runtime | Existing application API | simdxml integration |
+|---|---|---|
+| Quarkus/Jakarta | `jakarta.xml.bind.*` | add `simdxml-jaxb-provider`; keep `quarkus-jaxb` |
+| Open Liberty/Java EE 8 | `javax.xml.bind.*` | package `simdxml-jaxb-javax-provider` in `WEB-INF/lib` |
+| Tomcat 9/Java EE 8 WAR | `javax.xml.bind.*` | package `simdxml-jaxb-javax-provider` in `WEB-INF/lib` |
+| GlassFish/Metro/JAX-WS | Jakarta or Javax | select the provider matching the server generation |
+
+Quarkus requires only a dependency declaration:
+
+```xml
+<dependency>
+  <groupId>org.simdxml</groupId><artifactId>simdxml-jaxb-provider</artifactId>
+  <version>${simdxml.version}</version>
+</dependency>
+<dependency><groupId>io.quarkus</groupId><artifactId>quarkus-jaxb</artifactId></dependency>
+```
+
+For a Java EE 8 WAR:
+
+```xml
+<dependency>
+  <groupId>org.simdxml</groupId><artifactId>simdxml-jaxb-javax-provider</artifactId>
+  <version>${simdxml.version}</version>
+</dependency>
+```
+
+Open Liberty keeps its existing feature configuration; Tomcat receives the provider in the WAR
+because it supplies the servlet container but not a Java EE 8 JAXB implementation. If a server's
+parent-first class loading selects another provider, use its documented application-preference
+setting or the provider factory property. Application models and endpoint source remain unchanged.
+
 ## Thread safety and ownership
 
 Immutable metadata, syntax tables and profile configuration are shareable. A parser executor and a

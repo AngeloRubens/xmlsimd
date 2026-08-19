@@ -34,11 +34,10 @@ supported. `@XmlElementWrapper` is native on byte-array, StAX and SAX paths. Map
 portable `XmlAdapter` entry-bean pattern rather than a proprietary wire format. Object results and
 bidirectional output are compared with JAXB RI.
 
-Not yet in the profile: package-level `@XmlSchema` namespace defaults, `@XmlType`,
-callbacks/listeners,
-polymorphism/`xsi:type`, binary/date XML Schema types, `InputStream`/`Reader`/StAX/SAX/DOM overloads,
-XJC-generated models and package-level annotations. These are implementation backlog, not passing
-or silently excluded compatibility cases.
+Remaining profile gaps are package-level `@XmlSchema` namespace defaults, callbacks/listeners,
+binary/date XML Schema types, XJC-generated models, package-level annotations and the complete
+standard API overload matrix. `@XmlType` metadata and polymorphism via `xsi:type` are covered by
+the core compatibility kit. Gaps are tracked explicitly rather than silently excluded.
 
 Direct `Map<K,V>` properties still require `@XmlJavaTypeAdapter`, as they do for portable JAXB
 models; the adapter hot path and its entry-bean representation are covered against JAXB RI.
@@ -53,6 +52,100 @@ The separate `simdxml-jaxb-provider` artifact is loaded through the standard
 verify provider discovery, global-root unmarshalling, UTF-8 marshalling, fragment mode, Writer,
 InputStream and `Source` paths. The remaining overloads and lifecycle features stay listed as
 unsupported until executable compatibility cases pass.
+
+### Zero-code-change deployment examples
+
+The intended replacement boundary is dependency-level: application source remains unchanged and
+only the provider dependency, archive contents or server configuration is adjusted.
+
+#### Quarkus 3 / Jakarta
+
+Existing code continues to use the standard API:
+
+```java
+JAXBContext context = JAXBContext.newInstance(Invoice.class);
+Marshaller marshaller = context.createMarshaller();
+Unmarshaller unmarshaller = context.createUnmarshaller();
+```
+
+Add the provider alongside the existing Quarkus JAXB extension:
+
+```xml
+<dependency>
+  <groupId>org.simdxml</groupId>
+  <artifactId>simdxml-jaxb-provider</artifactId>
+  <version>${simdxml.version}</version>
+</dependency>
+<dependency>
+  <groupId>io.quarkus</groupId>
+  <artifactId>quarkus-jaxb</artifactId>
+</dependency>
+```
+
+Quarkus CXF keeps the same `@WebService`, model classes and endpoint path. During augmentation,
+schema/WSDL generation uses the standard JAXB cold-path delegate; request unmarshalling and
+response marshalling use simdxml.
+
+#### Open Liberty / Java EE 8
+
+The application continues to use `javax.xml.bind.JAXBContext`, with no changes to its WAR,
+servlet, JAX-WS endpoint or model classes. Add the Javax provider:
+
+```xml
+<dependency>
+  <groupId>org.simdxml</groupId>
+  <artifactId>simdxml-jaxb-javax-provider</artifactId>
+  <version>${simdxml.version}</version>
+</dependency>
+```
+
+The existing server configuration remains valid:
+
+```xml
+<featureManager>
+  <feature>servlet-4.0</feature>
+  <feature>jaxb-2.2</feature>
+</featureManager>
+```
+
+The provider is packaged in the application class loader and discovered through the standard
+JAXB 2.3 provider services. The Open Liberty smoke test verifies selection over HTTP.
+
+#### Tomcat 9 / Java EE 8 WAR
+
+Tomcat requires no server installation change. Package the same Javax provider in the WAR:
+
+```xml
+<dependency>
+  <groupId>org.simdxml</groupId>
+  <artifactId>simdxml-jaxb-javax-provider</artifactId>
+  <version>${simdxml.version}</version>
+</dependency>
+```
+
+`web.xml`, servlet code, endpoint code and JAXB model code remain unchanged. The `tomcat-it`
+profile deploys the WAR on a downloaded Tomcat 9 instance and verifies that the provider is loaded
+from `WEB-INF/lib`.
+
+#### GlassFish, Metro and Jakarta servers
+
+Use the Jakarta provider artifact and retain the server's existing JAXB/JAX-WS configuration:
+
+```xml
+<dependency>
+  <groupId>org.simdxml</groupId>
+  <artifactId>simdxml-jaxb-provider</artifactId>
+  <version>${simdxml.version}</version>
+</dependency>
+```
+
+The application continues to call the standard Jakarta JAXB and JAX-WS APIs. If parent-first class
+loading selects the bundled provider, use the server's documented application-provider preference;
+no application source change is required.
+
+These examples demonstrate dependency-level integration, not certification. A runtime-specific
+compatibility claim requires endpoint tests for namespace/QName handling, `JAXBElement`,
+`xsi:type`, faults, attachments and the server's class-loading policy.
 
 ## `javax-provider-java8`
 

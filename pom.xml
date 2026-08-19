@@ -106,6 +106,7 @@
     <profiles>
         <!-- Allows the integration reactor's opt-in Quarkus module without profile warnings in this child. -->
         <profile><id>quarkus-it</id></profile>
+        <profile><id>quarkus-cxf-it</id></profile>
         <profile>
             <id>woodstox-6</id>
             <properties>

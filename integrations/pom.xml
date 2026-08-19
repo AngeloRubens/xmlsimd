@@ -18,5 +18,9 @@
             <id>quarkus-it</id>
             <modules><module>server-smoke-quarkus</module></modules>
         </profile>
+        <profile>
+            <id>quarkus-cxf-it</id>
+            <modules><module>server-smoke-quarkus</module></modules>
+        </profile>
     </profiles>
 </project>

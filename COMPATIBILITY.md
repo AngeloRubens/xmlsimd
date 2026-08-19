@@ -206,6 +206,26 @@ providers so VarHandle, Vector API, FFM and virtual-thread symbols do not enter 
 | Java 21 | Java 8 set | Vector and virtual-thread context policy |
 | Java 22-26 | Java 8 set | Vector, virtual threads and FFM/direct memory |
 
+## Application-server integration status
+
+| Integration | Executable test in this repository | Current status |
+|---|---|---|
+| Quarkus + Quarkiverse CXF + Jakarta JAXB | `simdxml-server-smoke-quarkus` | Implemented and run in CI |
+| Apache CXF standalone + Jakarta JAXB | — | Planned; no executable test yet |
+| Tomcat 9 + Javax JAXB WAR | `tomcat-it` | Implemented and run in CI |
+| Open Liberty + Javax JAXB WAR | `openliberty-it` | Implemented and run in CI |
+| GlassFish/Metro | — | Planned; no executable test yet |
+| Axis2/AXIOM | — | Planned; no executable test yet |
+
+The current Quarkus test exercises Quarkiverse CXF inside Quarkus; it is not a standalone Apache CXF
+container or `JAXBDataBinding` replacement test. A standalone CXF claim requires its own executable
+module and dependency-only application fixture.
+
+In particular, this repository does **not** currently claim an Axis2 integration. The Axis2 entry in
+the framework roadmap identifies the intended AXIOM/StAX adapter and WSDL2Java databinding work; a
+claim will be made only after a dedicated Axis2 module starts a real SOAP endpoint and verifies
+JAXB provider selection, namespaces/QNames, faults, `JAXBElement`, `xsi:type` and attachments.
+
 On 2026-08-19, Maven compiled 63 portable core sources plus one smoke test with `--release 8`, and
 the resulting strict UTF-8 plus ISO 20022 flyweight smoke test ran successfully on the local
 OpenJDK 8 JRE using `scalar-swar64`. The Javax provider was also packaged as class-file version 52

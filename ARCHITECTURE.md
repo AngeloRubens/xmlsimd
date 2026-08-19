@@ -143,8 +143,10 @@ The lease covers the complete callback, so flyweight views cannot observe anothe
 
 ## Framework adapters
 
-CXF, Metro/JAX-WS and Axis2 adapters route through the same SOAP projection. When a framework still
-owns raw transport bytes, the adapter can preserve the byte-oriented path. When it supplies an
-`XMLStreamReader`, simdxml consumes that reader without constructing a DOM or reparsing the message.
-Transport, API compatibility and parser policy remain separate modules, which keeps the core
-extensible and testable.
+The implemented integration smoke test covers Quarkus/Quarkiverse CXF, while a standalone Apache
+CXF `JAXBDataBinding` replacement test is still planned. Tomcat and Open Liberty are also covered.
+Metro and Axis2 are planned adapters that will route through the same SOAP projection once their
+dedicated modules and endpoint tests are added. When a framework owns raw transport bytes, an adapter can
+preserve the byte-oriented path; when it supplies an `XMLStreamReader`, simdxml can consume that
+reader without constructing a DOM or reparsing the message. Transport, API compatibility and parser
+policy remain separate modules, which keeps the core extensible and testable.

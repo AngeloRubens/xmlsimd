@@ -23,6 +23,38 @@ class BindingRegressionTest {
     }
 
     @Test
+    void integralValuesAreWrittenExactlyWithoutAnIntermediateString() {
+        SimdMarshaller marshaller = SimdJaxbContext.builder(NumAttr.class).build()
+                .createMarshaller().withXmlDeclaration(false);
+        SimdMarshaller longs = SimdJaxbContext.builder(Longs.class).build()
+                .createMarshaller().withXmlDeclaration(false);
+        for (int n : new int[] {0, 7, -7, 10, 99, 100, Integer.MAX_VALUE, Integer.MIN_VALUE}) {
+            NumAttr attr = new NumAttr(); attr.n = n;
+            assertEquals("<r n=\"" + n + "\"></r>", new String(marshaller.marshal(attr), StandardCharsets.UTF_8));
+        }
+        for (long n : new long[] {Long.MAX_VALUE, Long.MIN_VALUE, -1_000_000_000_000L, 1_000_000_000_000_000_000L}) {
+            Longs value = new Longs(); value.n = n;
+            assertEquals("<r><n>" + n + "</n></r>", new String(longs.marshal(value), StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    void reusedArrayBufferGrowsAndDoesNotLeakTheEarlierDocument() {
+        SimdMarshaller marshaller = SimdJaxbContext.builder(NumList.class).build()
+                .createMarshaller().withXmlDeclaration(false);
+        for (int size : new int[] {300_000, 3, 1, 20_000}) {
+            NumList list = new NumList();
+            StringBuilder expected = new StringBuilder("<r>");
+            for (int i = 0; i < size; i++) { list.n.add(i - 5); expected.append("<n>").append(i - 5).append("</n>"); }
+            String produced = new String(marshaller.marshal(list), StandardCharsets.UTF_8);
+            assertEquals(expected.append("</r>").toString(), produced);
+            java.io.ByteArrayOutputStream stream = new java.io.ByteArrayOutputStream();
+            marshaller.marshal(list, stream);
+            assertEquals(produced, new String(stream.toByteArray(), StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
     void attributeNameThatPrefixesAnEarlierNameIsNotADuplicate() {
         assertEquals("1", bind("<e abc='1' ab='2'/>", Attrs.class).abc);
         assertEquals("2", bind("<e abc='1' ab='2'/>", Attrs.class).ab);

@@ -1,6 +1,5 @@
 package org.simdxml;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 
@@ -30,18 +29,24 @@ public final class SimdMarshaller {
 
     public XmlBindingAdapter adapter(Class<?> adapterType) { return adapters.get(adapterType); }
 
+    /** Writes into the writer's reusable buffer and returns one exact-size copy of the document. */
     public byte[] marshal(Object value) {
-        ByteArrayOutputStream output = new ByteArrayOutputStream(1024);
-        marshal(value, output);
-        return output.toByteArray();
+        java.util.Objects.requireNonNull(value, "value");
+        writer.resetToArray();
+        writeDocument(value);
+        return writer.toByteArray();
     }
 
     public void marshal(Object value, OutputStream output) {
         java.util.Objects.requireNonNull(value, "value");
         java.util.Objects.requireNonNull(output, "output");
+        writer.reset(output);
+        writeDocument(value);
+    }
+
+    private void writeDocument(Object value) {
         requireBound(value.getClass());
         try {
-            writer.reset(output);
             if (xmlDeclaration) writer.raw("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
             writeObject(value, XmlBindingMetadata.rootName(value.getClass()), XmlExpandedName.EMPTY_NAMESPACE);
             writer.finish();
@@ -111,7 +116,7 @@ public final class SimdMarshaller {
             if(value instanceof javax.xml.namespace.QName){javax.xml.namespace.QName q=(javax.xml.namespace.QName)value;String prefix=q.getPrefix().isEmpty()?"q":q.getPrefix();if(!q.getNamespaceURI().isEmpty())output.writeNamespace(prefix,q.getNamespaceURI());output.writeCharacters(q.getNamespaceURI().isEmpty()?q.getLocalPart():prefix+":"+q.getLocalPart());}
             else output.writeCharacters(XmlBindingMetadata.lexical(value)); output.writeEndElement(); return;
         }
-        java.util.Map<String, String> prefixes = new java.util.LinkedHashMap<String, String>();
+        java.util.Map<String, String> prefixes = new java.util.HashMap<String, String>();
         for (XmlBindingMetadata.Property property : XmlBindingMetadata.attributes(type)) {
             String namespace = property.expandedName().namespace();
             if (!namespace.isEmpty() && !prefixes.containsKey(namespace)) {
@@ -230,36 +235,45 @@ public final class SimdMarshaller {
         writeTypeAttribute(type,declaredType);
         if (XmlBindingMetadata.scalar(type)) {
             if(value instanceof javax.xml.namespace.QName){javax.xml.namespace.QName q=(javax.xml.namespace.QName)value;String prefix=q.getPrefix().isEmpty()?"q":q.getPrefix();if(!q.getNamespaceURI().isEmpty()){writer.raw(" xmlns:");writer.raw(prefix);writer.raw("=\"");writer.attribute(q.getNamespaceURI());writer.ascii('"');}writer.ascii('>');writer.text(q.getNamespaceURI().isEmpty()?q.getLocalPart():prefix+":"+q.getLocalPart());}
+            else if (integral(value)) { writer.ascii('>'); writer.decimal(((Number) value).longValue()); }
             else { writer.ascii('>'); writer.text(XmlBindingMetadata.lexical(value)); }
             close(elementName.localName()); return;
         }
-        java.util.Map<String, String> attributePrefixes = new java.util.LinkedHashMap<String, String>();
-        for (XmlBindingMetadata.Property property : XmlBindingMetadata.attributes(type)) {
-            String namespace = property.expandedName().namespace();
-            if (!namespace.isEmpty() && !attributePrefixes.containsKey(namespace)) {
+        // Indexed loops: the metadata lists are unmodifiable wrappers whose iterator() allocates.
+        // The prefix map only exists for types with namespace-qualified attributes.
+        java.util.List<XmlBindingMetadata.Property> attributes = XmlBindingMetadata.attributes(type);
+        java.util.Map<String, String> attributePrefixes = null;
+        for (int a = 0; a < attributes.size(); a++) {
+            String namespace = attributes.get(a).expandedName().namespace();
+            if (namespace.isEmpty()) continue;
+            if (attributePrefixes == null) attributePrefixes = new java.util.HashMap<String, String>();
+            if (!attributePrefixes.containsKey(namespace)) {
                 String prefix = "ns" + (attributePrefixes.size() + 1);
                 attributePrefixes.put(namespace, prefix);
                 writer.raw(" xmlns:"); writer.raw(prefix); writer.raw("=\"");
                 writer.attribute(namespace); writer.ascii('"');
             }
         }
-        for (XmlBindingMetadata.Property property : XmlBindingMetadata.attributes(type)) {
+        for (int a = 0; a < attributes.size(); a++) {
+            XmlBindingMetadata.Property property = attributes.get(a);
             Object fieldValue = property.read(value);
             if (fieldValue == null) continue;
             fieldValue = marshalAdapted(property, fieldValue);
             writer.ascii(' ');
-            String prefix = attributePrefixes.get(property.expandedName().namespace());
+            String prefix = attributePrefixes == null ? null : attributePrefixes.get(property.expandedName().namespace());
             if (prefix != null) { writer.raw(prefix); writer.ascii(':'); }
             writer.raw(property.xmlName()); writer.raw("=\"");
-            writer.attribute(property.lexical(fieldValue)); writer.ascii('"');
+            writeLexical(property, fieldValue, true); writer.ascii('"');
         }
         writer.ascii('>');
         XmlBindingMetadata.Property text = XmlBindingMetadata.valueProperty(type);
         if (text != null) {
             Object fieldValue = text.read(value);
-            if (fieldValue != null) writer.text(text.lexical(marshalAdapted(text, fieldValue)));
+            if (fieldValue != null) writeLexical(text, marshalAdapted(text, fieldValue), false);
         }
-        for (XmlBindingMetadata.Property property : XmlBindingMetadata.properties(type)) {
+        java.util.List<XmlBindingMetadata.Property> properties = XmlBindingMetadata.properties(type);
+        for (int p = 0; p < properties.size(); p++) {
+            XmlBindingMetadata.Property property = properties.get(p);
             if (property.attribute() || property.value()) continue;
             Object fieldValue = property.read(value);
             if (fieldValue == null) { if(property.nillable()&&!property.list()&&property.wrapperName()==null)writeNilElement(property.expandedName());continue; }
@@ -276,6 +290,15 @@ public final class SimdMarshaller {
             } else writeProperty(property,fieldValue,activeDefault);
         }
         close(elementName.localName());
+    }
+    /** Integral values go straight to bytes; everything else keeps the shared lexical mapping. */
+    private void writeLexical(XmlBindingMetadata.Property property, Object value, boolean attribute) throws IOException {
+        if (integral(value) && !property.hexBinary()) { writer.decimal(((Number) value).longValue()); return; }
+        String lexical = property.lexical(value);
+        if (attribute) writer.attribute(lexical); else writer.text(lexical);
+    }
+    private static boolean integral(Object value) {
+        return value instanceof Integer || value instanceof Long || value instanceof Short || value instanceof Byte;
     }
     private void writeItems(XmlBindingMetadata.Property property,Object fieldValue,String inherited)throws IOException{
         if(fieldValue.getClass().isArray()){int length=java.lang.reflect.Array.getLength(fieldValue);for(int i=0;i<length;i++){Object item=java.lang.reflect.Array.get(fieldValue,i);if(item!=null)writeProperty(property,item,inherited);else if(property.nillable())writeNilElement(property.expandedName());}}

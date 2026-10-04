@@ -1,0 +1,118 @@
+name: Binding A/B
+
+# Forked JMH comparison of two commits on the same runner: the base build's main classes and the
+# head build's main classes run the same benchmark binary (head test classes), alternating
+# base/new twice, with Jackson XML as the control measured in every invocation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: 'Baseline commit (default: parent of the head commit)'
+        required: false
+        default: ''
+      operation:
+        description: 'JMH operation parameter'
+        required: false
+        default: 'marshal,unmarshal'
+      books:
+        description: 'JMH books parameter'
+        required: false
+        default: '4,32,256'
+  push:
+    branches-ignore: [ main ]
+    paths:
+      - 'src/main/java/org/simdxml/SimdMarshaller.java'
+      - 'src/main/java/org/simdxml/Utf8XmlWriter.java'
+      - '.github/workflows/binding-ab.yml'
+
+concurrency:
+  group: binding-ab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      OPERATION: ${{ github.event.inputs.operation || 'marshal,unmarshal' }}
+      BOOKS: ${{ github.event.inputs.books || '4,32,256' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '24'
+          cache: maven
+      - name: Build head and base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${{ github.event.inputs.base }}"
+          [ -n "$base" ] || base="$(git rev-parse HEAD~1)"
+          echo "BASE_SHA=$(git rev-parse "$base")" >> "$GITHUB_ENV"
+          echo "HEAD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          mvn -B -ntp -q test-compile
+          mvn -B -ntp -q dependency:build-classpath -DincludeScope=test -Dmdep.outputFile=target/benchmark-classpath.txt
+          mkdir -p variants
+          cp -r target/classes variants/new
+          git worktree add -q ../base "$base"
+          (cd ../base && mvn -B -ntp -q compile)
+          cp -r ../base/target/classes variants/base
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Run JMH (base, new, base, new)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ab-results
+          { echo "base $BASE_SHA"; echo "head $HEAD_SHA"; java -version 2>&1; nproc; lscpu | grep 'Model name'; } > ab-results/environment.txt
+          deps="$(cat target/benchmark-classpath.txt)"
+          vector=""
+          if java --list-modules 2>/dev/null | grep -q '^jdk\.incubator\.vector@'; then vector="--add-modules jdk.incubator.vector"; fi
+          for round in 1 2; do
+            for variant in base new; do
+              echo "$variant round $round load $(cat /proc/loadavg)" >> ab-results/environment.txt
+              java $vector --enable-native-access=ALL-UNNAMED -cp "variants/$variant:target/test-classes:$deps" \
+                org.openjdk.jmh.Main 'org.simdxml.ObjectBindingGcBenchmark.bind' \
+                -f 3 -wi 5 -i 8 -w 1s -r 1s -prof gc -foe true \
+                -p library=simdxml,jackson -p operation="$OPERATION" -p books="$BOOKS" \
+                -jvmArgsAppend "$vector --enable-native-access=ALL-UNNAMED -XX:+UseG1GC -XX:ActiveProcessorCount=2" \
+                -rf json -rff "ab-results/$variant-$round.json" > "ab-results/$variant-$round.txt" 2>&1
+            done
+          done
+      - name: Summarize
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import json, glob, os
+          rows = {}
+          for path in sorted(glob.glob('ab-results/*-*.json')):
+              variant, rnd = os.path.basename(path)[:-5].split('-')
+              for r in json.load(open(path)):
+                  p = r['params']
+                  key = (p['operation'], int(p['books']), p['library'])
+                  alloc = r['secondaryMetrics'].get('·gc.alloc.rate.norm') or r['secondaryMetrics'].get('gc.alloc.rate.norm')
+                  pm = r['primaryMetric']
+                  rows.setdefault(key, {})[f'{variant}{rnd}'] = (pm['score'], pm['scoreError'], alloc['score'] if alloc else float('nan'))
+          print(f"## Binding A/B\n\nbase `{os.environ['BASE_SHA'][:10]}` vs head `{os.environ['HEAD_SHA'][:10]}`, JMH -f 3, 5x1s warmup, 8x1s measurement, JDK 25.\n")
+          print('| op | books | library | base ops/s (r1 / r2) | new ops/s (r1 / r2) | Δ ops/s | base B/op | new B/op | Δ B/op |')
+          print('|---|---:|---|---|---|---:|---:|---:|---:|')
+          for key in sorted(rows):
+              v = rows[key]
+              def cell(name): return ' / '.join(f"{v[name+r][0]:,.0f} ± {v[name+r][1]:,.0f}" for r in '12' if name+r in v)
+              def mean(name, i): xs = [v[name+r][i] for r in '12' if name+r in v]; return sum(xs) / len(xs) if xs else float('nan')
+              bo, no, ba, na = mean('base', 0), mean('new', 0), mean('base', 2), mean('new', 2)
+              print(f"| {key[0]} | {key[1]} | {key[2]} | {cell('base')} | {cell('new')} | {(no / bo - 1) * 100:+.1f}% | {ba:,.0f} | {na:,.0f} | {(na / ba - 1) * 100:+.1f}% |")
+          print('\n```text'); print(open('ab-results/environment.txt').read()); print('```')
+          EOF
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: binding-ab
+          path: ab-results/

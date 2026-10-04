@@ -296,6 +296,35 @@ books (-6.1%) and allocates 77% more than Jackson** at that size. Errors are und
 intervals are disjoint, so this is a result rather than noise: growing a single output array by
 doubling is the marshal path's remaining weakness on large documents.
 
+### Marshal on a reused output buffer (2026-10-04)
+
+`SimdMarshaller.marshal(Object)` now writes into the writer's own buffer, which grows when needed
+and is kept across calls, and returns one exact-size copy. The same change removes a prefix map
+and three iterators per element and writes integers as decimal bytes without a `String`.
+
+Measured on CI (workflow `Binding A/B`, run `37189537366`): GitHub `ubuntu-latest`, 4 vCPU Intel
+Xeon Platinum 8370C, Temurin 25.0.4.1. Base and head run the same benchmark binary, alternating
+base/new/base/new, 3 forks each, 5×1 s warmup and 8×1 s measurement, `-prof gc`, with Jackson
+measured in every invocation as the control. Figures are the mean of the two rounds; JMH errors are
+under 1.4%. Absolute numbers are not comparable with the local tables above (different machine);
+ratios within the run are.
+
+| marshal ops/s | before | after | change | Jackson XML | after vs Jackson |
+|---|---:|---:|---:|---:|---:|
+| 4 books | 1,213,550 | **1,554,113** | **+28.1%** | 712,917 | **+118.0%** |
+| 32 books | 190,340 | **232,991** | **+22.4%** | 159,545 | **+46.0%** |
+| 256 books | 19,283 | **23,932** | **+24.1%** | 20,173 | **+18.6%** |
+
+| marshal B/op | before | after | Jackson XML |
+|---|---:|---:|---:|
+| 4 books | 1,504 | **248** | 1,872 |
+| 32 books | 6,128 | **1,464** | 5,104 |
+| 256 books | 76,312 | **13,680** | 43,072 |
+
+simdxml now marshals faster than Jackson XML at every size and allocates less at every size; at
+256 books about 11,600 of the 13,680 bytes are the returned `byte[]` itself. Jackson, unchanged
+between the two configurations, moved by at most 1.7%.
+
 ### Stage split: tokenization versus binding
 
 `BindingStageBenchmark` separates the reader from the binder on the same fixture. `bindPretokenized`

@@ -5,20 +5,19 @@ significativa, indicando test e benchmark eseguiti.
 
 ## Riprendere da qui
 
-Ultimo lavoro: branch `mtom-xop-and-binding-performance`, commit `290cb9e` (2026-08-27).
-Suite verde: 90 test nel core, 59 nelle integrazioni.
+Ultimo lavoro: branch `perf/marshal-output-buffer`, commit `695d81e` (2026-10-04): marshal su
+buffer riusato, misurato in CI con il workflow `Binding A/B`. Suite verde: 92 test nel core.
 
-I sette punti ancora aperti, in ordine di rendimento atteso:
+I sei punti ancora aperti, in ordine di rendimento atteso:
 
 | # | punto | dove |
 |---|---|---|
 | 1 | I namespace costano il **47%** del throughput: piano di risoluzione precompilato per i modelli a namespace singolo | sezione «Accesso al bean» |
-| 2 | Il marshal alloca il **77% più di Jackson** su 11,5 KB: il buffer di uscita cresce a copie ripetute | sezione «Marshal» |
-| 3 | Restano ~24 byte/elemento che il binder standard alloca in più del Direct a 256 book | sezione «`Object[]`, `Map` e `String` inutili» |
-| 4 | `org.simdxml.utf8.vector.threshold`: misura non conclusiva, serve una macchina scarica | sezione «utf8.vector.threshold» |
-| 5 | Tabella ASM/reflection/VarHandle da rifare: contaminata | sezione «Accesso al bean» |
-| 6 | Binder specializzato generato per tipo: può attaccare al massimo il 38% del budget, rimandato dopo 1 e 2 | P1 — binding Direct |
-| 7 | Vettorizzare il terminatore dei nomi XML: analizzato e rimandato, con motivazione | P1 — core Direct/FFM |
+| 2 | Restano ~24 byte/elemento che il binder standard alloca in più del Direct a 256 book | sezione «`Object[]`, `Map` e `String` inutili» |
+| 3 | `org.simdxml.utf8.vector.threshold`: misura non conclusiva, serve una macchina scarica | sezione «utf8.vector.threshold» |
+| 4 | Tabella ASM/reflection/VarHandle da rifare: contaminata | sezione «Accesso al bean» |
+| 5 | Binder specializzato generato per tipo: può attaccare al massimo il 38% del budget, rimandato dopo 1 | P1 — binding Direct |
+| 6 | Vettorizzare il terminatore dei nomi XML: analizzato e rimandato, con motivazione | P1 — core Direct/FFM |
 
 Tre punti aperti su MTOM sono in [MTOM_HANDOFF.md](MTOM_HANDOFF.md): tipi `Image`/`Source`,
 swaRef su collezioni, riemissione di `xmime:contentType`.
@@ -33,8 +32,9 @@ messaggio da 1.407 byte, JMH forked a macchina scarica). **Raggiunto anche per i
 2026-08-27**: batte Jackson a tutte e tre le taglie misurate e alloca quanto il binder standard a 4
 e 32 book, meno a 256.
 
-Restano due divari misurati e non chiusi: **il marshal alloca il 77% più di Jackson** su 11,5 KB di
-output, e **i namespace costano il 47% del throughput** rispetto al percorso unqualified.
+**Raggiunto anche per il marshal il 2026-10-04**: batte Jackson in throughput a tutte e tre le taglie
+(+116% / +46% / +19%) e alloca meno a tutte e tre (−87% / −71% / −68%). Resta un divario misurato e
+non chiuso: **i namespace costano il 47% del throughput** rispetto al percorso unqualified.
 
 ## Stato attuale
 
@@ -355,10 +355,76 @@ simdxml vince nettamente sui messaggi piccoli (+57% a 4 book) ma **perde su thro
 (−6,1%) e alloca il 77% in più di Jackson** alla stessa taglia. Gli intervalli sono disgiunti e gli
 errori sotto l'1,7%: è un risultato, non rumore.
 
-- [ ] **Prossimo obiettivo del marshal**: 76.313 B/op contro i 43.072 di Jackson su 11,5 KB di
-      output significa che il buffer di uscita viene fatto crescere a copie ripetute. Misurare
-      `Utf8XmlWriter` isolato e valutare una stima iniziale della capacità dal grafo, o una catena
-      di segmenti invece di un singolo array raddoppiato.
+- [x] **Prossimo obiettivo del marshal**: 76.313 B/op contro i 43.072 di Jackson su 11,5 KB di
+      output significa che il buffer di uscita viene fatto crescere a copie ripetute.
+      → **2026-10-04**: chiuso. Vedi «Marshal su buffer riusato» sotto.
+
+### 2026-10-04 — Marshal su buffer riusato: Jackson superato anche in scrittura
+
+Quattro cause di allocazione, tutte nel percorso `SimdMarshaller.marshal(Object)` → `byte[]`:
+
+1. **`ByteArrayOutputStream(1024)`** cresceva raddoppiando fino alla taglia del documento
+   (1+2+4+8+16 KB a 256 book) e `toByteArray()` copiava tutto un'altra volta. Ora
+   `Utf8XmlWriter` scrive nel proprio buffer, che cresce quando serve e resta al marshaller fra una
+   chiamata e l'altra (rilasciato sopra 1 MB), e restituisce **una sola copia della misura esatta**.
+   Il percorso su `OutputStream` è invariato (flush ogni 8 KB).
+2. **Una `LinkedHashMap` dei prefissi per ogni oggetto**, anche senza attributi qualificati. Ora è
+   creata solo se serve, ed è una `HashMap`: il suo ordine non viene mai letto (i prefissi `nsN`
+   seguono l'ordine della lista degli attributi).
+3. **Un iteratore per ogni lista di metadati** (`attributes` due volte, `properties` una), che sono
+   `unmodifiableList`: stesso difetto già corretto in `directBean`. Ora cicli indicizzati.
+4. **Una `String` per ogni valore intero**: `int`, `long`, `short`, `byte` sono scritti in decimale
+   direttamente nel buffer (`Utf8XmlWriter.decimal`), anche come testo di elemento scalare.
+
+Test nuovi in `BindingRegressionTest`: estremi interi (`Integer.MIN_VALUE`, `Long.MIN_VALUE`,
+negativi, potenze di 10) e buffer riusato su documenti da 300.000 elementi seguiti da documenti
+piccoli, con output identico al percorso `OutputStream`.
+
+Misura **in CI**, workflow `Binding A/B` (run `37189537366`), runner GitHub `ubuntu-latest`, 4 vCPU
+Intel Xeon Platinum 8370C, Temurin 25.0.4.1, build con JDK 24. Base `02f9cbe` (commit padre) e head
+`695d81e` girano con **lo stesso binario del benchmark** (test-classes della head), alternati
+base/new/base/new, **3 fork** ciascuno, 5×1 s warmup + 8×1 s misura,
+`-XX:+UseG1GC -XX:ActiveProcessorCount=2`, `-prof gc`, Jackson misurato in ogni invocazione come
+controllo. Load average fra 0,8 e 1,1 su 4 vCPU per tutta la durata. Le cifre sono la media dei due
+round; gli errori JMH sono sotto l'1,4%.
+
+| marshal | base ops/s | new ops/s | Δ | Jackson ops/s | new vs Jackson |
+|---|---:|---:|---:|---:|---:|
+| 4 book | 1.213.550 | **1.554.113** | **+28,1%** | 712.917 | **+118,0%** |
+| 32 book | 190.340 | **232.991** | **+22,4%** | 159.545 | **+46,0%** |
+| 256 book | 19.283 | **23.932** | **+24,1%** | 20.173 | **+18,6%** |
+
+| marshal B/op | base | new | Δ | Jackson |
+|---|---:|---:|---:|---:|
+| 4 book | 1.504 | **248** | −83,5% | 1.872 |
+| 32 book | 6.128 | **1.464** | −76,1% | 5.104 |
+| 256 book | 76.312 | **13.680** | −82,1% | 43.072 |
+
+Il **controllo regge**: Jackson, codice identico nelle due configurazioni, varia fra −1,7% e +0,1%
+in throughput e di 0 B/op. A 256 book dei 13.680 B/op circa 11.600 sono il `byte[]` restituito, che
+nessuna implementazione può evitare.
+
+Comando (lo stesso per ogni round e variante, dal workflow):
+
+```shell
+java --add-modules jdk.incubator.vector --enable-native-access=ALL-UNNAMED \
+  -cp "variants/<base|new>:target/test-classes:$(cat target/benchmark-classpath.txt)" \
+  org.openjdk.jmh.Main 'org.simdxml.ObjectBindingGcBenchmark.bind' \
+  -f 3 -wi 5 -i 8 -w 1s -r 1s -prof gc -foe true \
+  -p library=simdxml,jackson -p operation=marshal,unmarshal -p books=4,32,256 \
+  -jvmArgsAppend "--add-modules jdk.incubator.vector --enable-native-access=ALL-UNNAMED -XX:+UseG1GC -XX:ActiveProcessorCount=2"
+```
+
+**Unmarshal nella stessa run** (codice non toccato): throughput entro ±0,2% a 4 e 32 book, +3,2% a
+256; B/op identici a 4 e 32 book. **A 256 book le allocazioni dell'unmarshal scendono da 68.096 a
+59.872 B/op (−8.224 = 257 × 32 byte, cioè un iteratore per elemento)** in entrambi i round, senza
+che il codice dell'unmarshal sia cambiato. La cifra coincide con un iteratore per elemento che
+l'escape analysis ora elimina, plausibilmente per un diverso budget di inlining nella build nuova;
+**non è dichiarato come risultato** finché non è spiegato.
+
+- [ ] Spiegare il −8.224 B/op dell'unmarshal a 256 book nella build nuova: trovare l'iteratore
+      residuo nel percorso di unmarshal (profilo allocazioni) e toglierlo esplicitamente, così il
+      valore non dipende dalle scelte del JIT.
 
 ### Parser-only, binder-only, end-to-end: la tokenizzazione domina
 
@@ -764,7 +830,8 @@ standard è **dimostrato** (+53% a 32 book, +118% a 4 book). Vedi le due sezioni
       **62% tokenizzazione / 38% binding** (60/40 a 256 book): un binder generato per tipo può
       attaccare al massimo quel 38%, e solo la parte non già coperta dal piano precompilato. I due
       candidati misurati sono più grossi: i namespace costano il **47%** del throughput, e il marshal
-      alloca il **77% più di Jackson** a 11,5 KB. Rimandato dopo quelli.
+      alloca il **77% più di Jackson** a 11,5 KB. Rimandato dopo quelli. Il marshal è chiuso il
+      2026-10-04; resta il punto dei namespace.
 - [x] Documentare che il percorso Direct corrente è namespace-free; il binder standard resta il
       percorso per namespace, wrapper e modelli JAXB complessi.
       → **2026-08-27**: javadoc di `DirectSimdXmlParser` e `ARCHITECTURE.md`.

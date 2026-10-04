@@ -52,7 +52,7 @@ final class SimdJakartaMarshaller implements Marshaller {
             marshalElement((JAXBElement) value, output);
             xml = output.toByteArray();
         } else {
-            try { xml = delegate.withXmlDeclaration(!fragment).marshal(value); }
+            try { xml = configured().withXmlDeclaration(!fragment).marshal(value); }
             catch (RuntimeException e) { throw new JAXBException(e); }
         }
         validate(xml);
@@ -70,7 +70,7 @@ final class SimdJakartaMarshaller implements Marshaller {
         }
         try {
             if (listener != null) listener.beforeMarshal(value);
-            delegate.withXmlDeclaration(!fragment).marshal(value, output);
+            configured().withXmlDeclaration(!fragment).marshal(value, output);
             if (listener != null) listener.afterMarshal(value);
         } catch (RuntimeException e) { throw new JAXBException(e); }
     }
@@ -108,6 +108,7 @@ final class SimdJakartaMarshaller implements Marshaller {
     @Override public Listener getListener() { return listener; }
     @Override public void setAttachmentMarshaller(AttachmentMarshaller value) { attachments = value; }
     @Override public AttachmentMarshaller getAttachmentMarshaller() { return attachments; }
+    private SimdMarshaller configured() { return delegate.withAttachmentHandler(JavaxAttachmentBridge.marshaller(attachments)); }
     @Override public void setAdapter(XmlAdapter adapter) {
         if (adapter == null) throw new IllegalArgumentException("adapter");
         setAdapterRaw(adapter.getClass(), adapter);
@@ -135,9 +136,9 @@ final class SimdJakartaMarshaller implements Marshaller {
             if (v instanceof JAXBElement) {
                 JAXBElement element = (JAXBElement) v;
                 javax.xml.namespace.QName name = element.getName();
-                delegate.withXmlDeclaration(!fragment).marshalElement(element.getValue(), name.getNamespaceURI(),
+                configured().withXmlDeclaration(!fragment).marshalElement(element.getValue(), name.getNamespaceURI(),
                         name.getLocalPart(), element.isNil(), w);
-            } else delegate.withXmlDeclaration(!fragment).marshal(v, w);
+            } else configured().withXmlDeclaration(!fragment).marshal(v, w);
             if (listener != null) listener.afterMarshal(v);
         } catch (RuntimeException failure) { throw new JAXBException(failure); }
     }
@@ -151,10 +152,10 @@ final class SimdJakartaMarshaller implements Marshaller {
             if (listener != null) listener.beforeMarshal(value);
             if (value instanceof JAXBElement) {
                 JAXBElement element=(JAXBElement)value; javax.xml.namespace.QName name=element.getName();
-                if (sax != null) delegate.withXmlDeclaration(!fragment).marshalElement(element.getValue(), name.getNamespaceURI(), name.getLocalPart(), element.isNil(), sax);
-                else delegate.withXmlDeclaration(!fragment).marshalElement(element.getValue(), name.getNamespaceURI(), name.getLocalPart(), element.isNil(), events);
-            } else if (sax != null) delegate.withXmlDeclaration(!fragment).marshal(value, sax);
-            else delegate.withXmlDeclaration(!fragment).marshal(value, events);
+                if (sax != null) configured().withXmlDeclaration(!fragment).marshalElement(element.getValue(), name.getNamespaceURI(), name.getLocalPart(), element.isNil(), sax);
+                else configured().withXmlDeclaration(!fragment).marshalElement(element.getValue(), name.getNamespaceURI(), name.getLocalPart(), element.isNil(), events);
+            } else if (sax != null) configured().withXmlDeclaration(!fragment).marshal(value, sax);
+            else configured().withXmlDeclaration(!fragment).marshal(value, events);
             if (listener != null) listener.afterMarshal(value);
         } catch (RuntimeException failure) { throw new JAXBException(failure); }
     }

@@ -177,6 +177,18 @@ final class SimdJaxbProviderTest {
         jakarta.xml.bind.UnmarshallerHandler handler=context.createUnmarshaller().getUnmarshallerHandler();org.xml.sax.XMLReader sax=javax.xml.parsers.SAXParserFactory.newInstance().newSAXParser().getXMLReader();sax.setContentHandler(handler);sax.parse(new org.xml.sax.InputSource(new StringReader(xml)));DefaultsDocument pushed=(DefaultsDocument)handler.getResult();assertNull(pushed.optional);assertEquals(7,pushed.count);
         ByteArrayOutputStream out=new ByteArrayOutputStream();context.createMarshaller().marshal(bytes,out);assertTrue(out.toString(java.nio.charset.StandardCharsets.UTF_8).contains("xsi:nil=\"true\""));
     }
+    @Test void standardAttachmentMarshallerProducesXopInclude() throws Exception {
+        JAXBContext context=JAXBContext.newInstance(AttachmentDocument.class); AttachmentDocument source=new AttachmentDocument(); source.payload=new byte[]{1,2,3};
+        final byte[][] captured=new byte[1][];
+        jakarta.xml.bind.attachment.AttachmentMarshaller am=new jakarta.xml.bind.attachment.AttachmentMarshaller(){
+            public String addMtomAttachment(jakarta.activation.DataHandler d,String n,String l){return "cid:one";}
+            public String addMtomAttachment(byte[] d,int o,int l,String t,String n,String x){captured[0]=java.util.Arrays.copyOfRange(d,o,o+l);return "cid:one";}
+            public String addSwaRefAttachment(jakarta.activation.DataHandler d){return "cid:one";}
+            public boolean isXOPPackage(){return true;}
+        };
+        ByteArrayOutputStream out=new ByteArrayOutputStream(); jakarta.xml.bind.Marshaller m=context.createMarshaller();m.setAttachmentMarshaller(am);m.marshal(source,out);
+        String xml=out.toString(java.nio.charset.StandardCharsets.UTF_8);assertTrue(xml.contains("xop:Include"));assertArrayEquals(source.payload,captured[0]);
+    }
     private static void assertConcurrentTypeBinding(JAXBContext context,java.util.concurrent.ExecutorService executor,int count)throws Exception{
         java.util.List<java.util.concurrent.Future<Boolean>> futures=new java.util.ArrayList<java.util.concurrent.Future<Boolean>>();
         for(int i=0;i<count;i++){final int value=i;futures.add(executor.submit(()->{String xml="<standard><when>2026-08-19T17:00:"+String.format("%02d",value%60)+"Z</when><duration>PT"+(value+1)+"S</duration></standard>";StandardTypes parsed=(StandardTypes)context.createUnmarshaller().unmarshal(new ByteArrayInputStream(xml.getBytes(java.nio.charset.StandardCharsets.UTF_8)));return parsed.when!=null&&parsed.duration!=null;}));}
@@ -228,4 +240,5 @@ final class SimdJaxbProviderTest {
         @XmlElement(required=true) public String required;
         public DefaultsDocument(){}
     }
+    @XmlRootElement(name="attachment") public static final class AttachmentDocument { @XmlElement public byte[] payload; public AttachmentDocument(){} }
 }

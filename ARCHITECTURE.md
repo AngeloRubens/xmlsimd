@@ -63,6 +63,23 @@ The payment profile uses precomputed byte lookup tables, bounded name hashes, ex
 and numeric parsing directly from byte slices. SOAP/HL7 profiles recognize protocol metadata while
 leaving payload semantics to the generic binder.
 
+### Direct/FFM binding is namespace-free
+
+`DirectSimdXmlParser.scan` handles any well-formed document. `DirectSimdXmlParser.bind` is narrower
+on purpose: it matches elements and attributes by local name only, and rejects any document that
+carries a prefix or an `xmlns` declaration with `XmlBindingException`. It also applies no
+`XmlAdapter` and no `@XmlElementWrapper`.
+
+Documents with namespaces, wrappers, adapters or otherwise complex JAXB models belong on the
+standard binder, reached through `SimdJaxbContext`/`SimdUnmarshaller`. That binder resolves
+namespace scope per element, so it is the path every JAXB-compatible integration uses; the Direct
+binder is an accelerator for flat, namespace-free payloads held in off-heap memory.
+
+The byte-level conversions are shared between the two binders — `Property.convert(XmlByteSlice)`
+for the heap reader and `Property.convert(XmlRawValue)` for the Direct one — so both produce
+identical values for `int`, `long`, `short`, `byte`, `boolean`, `float` and `double` without
+building an intermediate `String`.
+
 ## Backends and Java compatibility
 
 The heap parser is available on the Java 8-compatible scalar/SWAR path. Newer optional artifacts

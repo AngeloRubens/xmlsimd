@@ -3,7 +3,7 @@ package org.simdxml;
 import java.util.Map;
 
 /** Minimal event contract consumed by the precompiled object binder. */
-interface BindingXmlReader {
+interface BindingXmlReader extends BindingCursor {
     XmlEvent next();
     boolean hasNext();
     String name();

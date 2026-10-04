@@ -9,11 +9,13 @@ public final class SimdUnmarshaller {
     private final java.util.Map<XmlExpandedName, Class<?>> roots;
     private final java.util.Map<Class<?>, XmlBindingAdapter> adapters = new java.util.HashMap<Class<?>, XmlBindingAdapter>();
     private final XmlBinder binder = new XmlBinder(adapters);
+    private XmlAttachmentHandler attachments;
     SimdUnmarshaller(SimdXmlParser parser, Set<Class<?>> boundTypes, java.util.Map<XmlExpandedName, Class<?>> roots) {
         this.parser = parser; this.boundTypes = boundTypes; this.roots = roots;
         java.util.Set<Class<?>> visited = new java.util.HashSet<Class<?>>();
         for (Class<?> type : boundTypes) XmlBindingMetadata.installDefaultAdapters(type, adapters, visited);
     }
+    public SimdUnmarshaller withAttachmentHandler(XmlAttachmentHandler handler) { attachments=handler; binder.withAttachmentHandler(handler); return this; }
     public Object unmarshal(byte[] xml) { return binder.bindAny(parser.reusableStream(xml), roots); }
     public Object unmarshal(javax.xml.stream.XMLStreamReader reader) { return binder.bindAny(StaxBindingReaders.cursor(reader), roots); }
     public Object unmarshal(javax.xml.stream.XMLEventReader reader) { return binder.bindAny(StaxBindingReaders.events(reader), roots); }
@@ -23,7 +25,7 @@ public final class SimdUnmarshaller {
     }
     public XmlBindingAdapter adapter(Class<?> adapterType) { return adapters.get(adapterType); }
     /** Creates a reusable push SAX binder sharing this unmarshaller's precompiled adapters. */
-    public org.xml.sax.ContentHandler saxHandler() { return new SaxObjectBinderHandler(roots, adapters); }
+    public org.xml.sax.ContentHandler saxHandler() { return new SaxObjectBinderHandler(roots, adapters, attachments); }
     public Object saxResult(org.xml.sax.ContentHandler handler) {
         if (!(handler instanceof SaxObjectBinderHandler)) throw new IllegalArgumentException("Not a simdxml SAX handler");
         return ((SaxObjectBinderHandler) handler).result();

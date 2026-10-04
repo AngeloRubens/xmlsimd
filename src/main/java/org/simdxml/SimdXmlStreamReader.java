@@ -32,9 +32,13 @@ public final class SimdXmlStreamReader implements BindingXmlReader {
     private int textStart = -1;
     private int textEnd = -1;
     private Map<String, String> attributes = java.util.Collections.emptyMap();
+    private int attributeCount;
+    private int[] attributeNameStarts = new int[8], attributeNameEnds = new int[8];
+    private int[] attributeValueStarts = new int[8], attributeValueEnds = new int[8];
     private boolean namespaceDeclarations;
     private final XmlByteSlice nameSlice = new XmlByteSlice();
     private final XmlByteSlice textSlice = new XmlByteSlice();
+    private final XmlByteSlice attributeSlice = new XmlByteSlice();
 
     SimdXmlStreamReader(byte[] input, int length, int maxDepth, StructuralIndex index) {
         this(input, length, maxDepth, index, false);
@@ -76,16 +80,43 @@ public final class SimdXmlStreamReader implements BindingXmlReader {
         return nameSlice.reset(in, eventNameStart, eventNameEnd);
     }
     /** Raw XML text bytes before entity expansion; the flyweight changes on the next event/reset. */
-    public XmlByteSlice rawTextBytes() {
+    @Override public XmlByteSlice rawTextBytes() {
         require(XmlEvent.TEXT, XmlEvent.CDATA, XmlEvent.COMMENT, XmlEvent.PROCESSING_INSTRUCTION);
         return textSlice.reset(in, textStart, textEnd);
     }
-    public Map<String, String> attributes() { require(XmlEvent.START_ELEMENT); return attributes; }
-    public String attribute(String name) { require(XmlEvent.START_ELEMENT); return attributes.get(name); }
+    public Map<String, String> attributes() {
+        require(XmlEvent.START_ELEMENT);
+        if (attributes == null) {
+            SmallAttributeMap result = new SmallAttributeMap();
+            for (int i = 0; i < attributeCount; i++) {
+                String name = raw(attributeNameStarts[i], attributeNameEnds[i]);
+                if (!result.putUnique(name, decode(attributeValueStarts[i], attributeValueEnds[i])))
+                    throw new XmlParsingException("Duplicate attribute: " + name, attributeNameStarts[i]);
+            }
+            attributes = result;
+        }
+        return attributes;
+    }
+    /** Unqualified binding lookup; compares directly against input bytes and decodes only the value. */
+    public String attribute(String name) {
+        require(XmlEvent.START_ELEMENT);
+        for (int i = 0; i < attributeCount; i++)
+            if (asciiEquals(name, attributeNameStarts[i], attributeNameEnds[i]))
+                return decode(attributeValueStarts[i], attributeValueEnds[i]);
+        return null;
+    }
+    @Override public XmlByteSlice rawAttributeBytes(String name) {
+        require(XmlEvent.START_ELEMENT);
+        for (int i = 0; i < attributeCount; i++)
+            if (asciiEquals(name, attributeNameStarts[i], attributeNameEnds[i]))
+                return attributeSlice.reset(in, attributeValueStarts[i], attributeValueEnds[i]);
+        return null;
+    }
     @Override public boolean hasNamespaceDeclarations() { require(XmlEvent.START_ELEMENT); return namespaceDeclarations; }
     public boolean hasNext() { return !ended; }
-    int localNameHash() { return eventLocalNameHash; }
-    int localNameLength() { return eventNameEnd - eventLocalNameStart; }
+    @Override public boolean hasByteNames() { return true; }
+    @Override public int localNameHash() { return eventLocalNameHash; }
+    @Override public int localNameLength() { return eventNameEnd - eventLocalNameStart; }
     long localNamePrefix8() {
         int length = Math.min(8, localNameLength());
         long packed = 0;
@@ -104,6 +135,32 @@ public final class SimdXmlStreamReader implements BindingXmlReader {
         if (eventNameEnd - eventLocalNameStart != ascii.length) return false;
         for (int i = 0; i < ascii.length; i++) if (in[eventLocalNameStart + i] != ascii[i]) return false;
         return true;
+    }
+    @Override public boolean localNameEquals(String ascii) {
+        if (eventNameStart < 0 || eventNameEnd - eventLocalNameStart != ascii.length()) return false;
+        for (int i = 0; i < ascii.length(); i++) if ((byte) ascii.charAt(i) != in[eventLocalNameStart + i]) return false;
+        return true;
+    }
+    /** Byte-to-byte comparison; the binder holds precomputed ASCII names, so no char decoding. */
+    @Override public boolean localNameEqualsBytes(byte[] ascii) {
+        return eventNameStart >= 0 && byteRangeEquals(in, eventLocalNameStart,
+                eventLocalNameStart + ascii.length, ascii, 0, ascii.length);
+    }
+    @Override public XmlByteSlice rawAttributeBytes(byte[] name) {
+        require(XmlEvent.START_ELEMENT);
+        int index = attributeIndex(name);
+        return index < 0 ? null : attributeSlice.reset(in, attributeValueStarts[index], attributeValueEnds[index]);
+    }
+    @Override public String attribute(byte[] name) {
+        require(XmlEvent.START_ELEMENT);
+        int index = attributeIndex(name);
+        return index < 0 ? null : decode(attributeValueStarts[index], attributeValueEnds[index]);
+    }
+    private int attributeIndex(byte[] name) {
+        for (int i = 0; i < attributeCount; i++)
+            if (byteRangeEquals(in, attributeNameStarts[i], attributeNameEnds[i], name, 0, name.length))
+                return i;
+        return -1;
     }
 
     public XmlEvent next() {
@@ -161,20 +218,27 @@ public final class SimdXmlStreamReader implements BindingXmlReader {
         int nameEnd = p;
         eventNameStart = nameStart; eventNameEnd = nameEnd; eventNameHash = nameHash;
         boolean separated = p < end && isSpace(in[p]);
-        SmallAttributeMap attrs = null;
+        attributeCount = 0;
+        attributes = null;
         skipSpace();
         while (p < end && in[p] != '>' && !(in[p] == '/' && peek(1) == '>')) {
             if (!separated) fail("Whitespace required before attribute", p);
             int attrStart = p;
-            String attrName = readName(); skipSpace(); expect('='); skipSpace();
-            if (attrName.equals("xmlns") || attrName.startsWith("xmlns:")) namespaceDeclarations = true;
+            int attrNameStart = p; scanName(); int attrNameEnd = p;
+            if (asciiEquals("xmlns", attrNameStart, attrNameEnd) || startsWithAscii("xmlns:", attrNameStart, attrNameEnd)) namespaceDeclarations = true;
+            skipSpace(); expect('='); skipSpace();
             byte quote = peek(0);
             if (quote != '\'' && quote != '"') fail("Attribute value must be quoted", p);
             int valueStart = ++p;
             while (p < end && in[p] != quote) p++;
             if (p == end) fail("Unclosed attribute value", valueStart);
-            if (attrs == null) attrs = new SmallAttributeMap();
-            if (!attrs.putUnique(attrName, decode(valueStart, p))) fail("Duplicate attribute: " + attrName, attrStart);
+            for (int i = 0; i < attributeCount; i++)
+                if (byteRangeEquals(in, attributeNameStarts[i], attributeNameEnds[i], in, attrNameStart, attrNameEnd))
+                    fail("Duplicate attribute: " + raw(attrNameStart, attrNameEnd), attrStart);
+            ensureAttributeCapacity(attributeCount + 1);
+            attributeNameStarts[attributeCount] = attrNameStart; attributeNameEnds[attributeCount] = attrNameEnd;
+            attributeValueStarts[attributeCount] = valueStart; attributeValueEnds[attributeCount] = p;
+            attributeCount++;
             p++; separated = p < end && isSpace(in[p]); skipSpace();
         }
         boolean empty = p < end && in[p] == '/';
@@ -184,7 +248,6 @@ public final class SimdXmlStreamReader implements BindingXmlReader {
             if (rootSeen) fail("Multiple root elements", start);
             rootSeen = true;
         }
-        attributes = attrs == null ? java.util.Collections.<String, String>emptyMap() : attrs;
         if (empty) {
             pendingEmptyEnd = true;
             pendingNameStart = nameStart; pendingNameEnd = nameEnd;
@@ -256,7 +319,7 @@ public final class SimdXmlStreamReader implements BindingXmlReader {
     }
 
     private void clearEventData() {
-        name = null; text = null; textStart = textEnd = -1; attributes = java.util.Collections.emptyMap();
+        name = null; text = null; textStart = textEnd = -1; attributes = java.util.Collections.emptyMap(); attributeCount = 0;
         namespaceDeclarations = false;
         eventNameStart = eventNameEnd = eventLocalNameStart = -1; eventNameHash = eventLocalNameHash = 0;
     }
@@ -269,23 +332,58 @@ public final class SimdXmlStreamReader implements BindingXmlReader {
     }
     /** FNV-1a is accumulated for free while the delimiter-seeking name loop is already hot. */
     private int scanName() {
-        if (p >= end || !nameStart(in[p])) fail("Expected XML name", p);
+        final byte[] input = in;
+        final int limit = end;
+        int i = p;
+        if (i >= limit || !nameStart(input[i])) fail("Expected XML name", i);
+        int start = i;
         int hash = 0x811c9dc5;
-        int localHash = hash;
-        int localStart = p;
+        int localStart = -1;
+        /*
+         * One multiply chain per byte: qualified names are rare, so the local hash is deferred.
+         * The byte is kept in a local and the cursor stays in a register: the previous shape read
+         * every byte twice, once to hash it and once as the next iteration's loop condition.
+         */
+        byte value = input[i];
         do {
-            byte value = in[p++];
             hash = (hash ^ (value & 0xff)) * 0x01000193;
-            if (value == ':') { localHash = 0x811c9dc5; localStart = p; }
-            else localHash = (localHash ^ (value & 0xff)) * 0x01000193;
+            if (value == ':') localStart = i + 1;
+            if (++i >= limit) break;
+            value = input[i];
         }
-        while (p < end && namePart(in[p]));
+        while (namePart(value));
+        p = i;
+        if (localStart < 0) { eventLocalNameStart = start; eventLocalNameHash = hash; return hash; }
+        int localHash = 0x811c9dc5;
+        for (int at = localStart; at < p; at++) localHash = (localHash ^ (in[at] & 0xff)) * 0x01000193;
         eventLocalNameStart = localStart; eventLocalNameHash = localHash;
         return hash;
     }
     private boolean sameBytes(int left, int right, int length) {
         for (int i = 0; i < length; i++) if (in[left + i] != in[right + i]) return false;
         return true;
+    }
+    private boolean asciiEquals(String value, int from, int to) {
+        if (to - from != value.length()) return false;
+        for (int i = 0; i < value.length(); i++) if ((byte) value.charAt(i) != in[from + i]) return false;
+        return true;
+    }
+    private boolean startsWithAscii(String value, int from, int to) {
+        return to - from >= value.length() && asciiEquals(value, from, from + value.length());
+    }
+    private static boolean byteRangeEquals(byte[] left, int leftFrom, int leftTo,
+            byte[] right, int rightFrom, int rightTo) {
+        int length = leftTo - leftFrom;
+        if (length != rightTo - rightFrom) return false;
+        for (int i = 0; i < length; i++)
+            if (left[leftFrom + i] != right[rightFrom + i]) return false;
+        return true;
+    }
+    private void ensureAttributeCapacity(int needed) {
+        if (needed <= attributeNameStarts.length) return;
+        int capacity = attributeNameStarts.length << 1;
+        attributeNameStarts = Arrays.copyOf(attributeNameStarts, capacity); attributeNameEnds = Arrays.copyOf(attributeNameEnds, capacity);
+        attributeValueStarts = Arrays.copyOf(attributeValueStarts, capacity); attributeValueEnds = Arrays.copyOf(attributeValueEnds, capacity);
     }
     private boolean onlySpace(int from, int to) {
         for (int i = from; i < to; i++) if (!isSpace(in[i])) return false;
@@ -315,8 +413,16 @@ public final class SimdXmlStreamReader implements BindingXmlReader {
     private boolean startsIgnoreCase(int at, byte[] token) { return XmlByteUtils.startsIgnoreAsciiCase(in, end, at, token); }
     private int find(int from, byte[] needle) { return XmlByteUtils.find(in, end, from, needle); }
     private String raw(int from, int to) { return new String(in, from, to - from, StandardCharsets.UTF_8); }
+    /**
+     * Entity expansion scans its own range directly. The structural index exposes a forward-only
+     * cursor, so a second query over an already-visited range would report no entity at all.
+     */
+    private int indexOfByte(int from, int to, byte token) {
+        for (int i = from; i < to; i++) if (in[i] == token) return i;
+        return to;
+    }
     private String decode(int from, int to) {
-        int amp = index.next(from, to, (byte)'&', in);
+        int amp = indexOfByte(from, to, (byte)'&');
         if (amp >= to) return raw(from, to);
         StringBuilder out = new StringBuilder(to - from); int cursor = from;
         while (amp < to) {
@@ -327,7 +433,7 @@ public final class SimdXmlStreamReader implements BindingXmlReader {
             if ("lt".equals(entity)) out.append('<'); else if ("gt".equals(entity)) out.append('>');
             else if ("amp".equals(entity)) out.append('&'); else if ("apos".equals(entity)) out.append('\'');
             else if ("quot".equals(entity)) out.append('"'); else out.append(numericEntity(entity, amp));
-            cursor = semi + 1; amp = index.next(cursor, to, (byte)'&', in);
+            cursor = semi + 1; amp = indexOfByte(cursor, to, (byte)'&');
         }
         return out.append(raw(cursor, to)).toString();
     }

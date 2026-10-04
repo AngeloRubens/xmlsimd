@@ -7,17 +7,28 @@ public final class DirectXmlAttributes {
     private final DirectXmlByteSlice name = new DirectXmlByteSlice();
     private final DirectXmlByteSlice value = new DirectXmlByteSlice();
     private MemorySegment segment;
-    private long[] nameStarts, nameEnds, valueStarts, valueEnds;
+    private long[] nameStarts, nameEnds, valueStarts, valueEnds, nameLocalStarts;
+    private boolean[] valueEntities;
     private int size;
 
     DirectXmlAttributes reset(MemorySegment segment, long[] nameStarts, long[] nameEnds,
-                              long[] valueStarts, long[] valueEnds, int size) {
+                              long[] valueStarts, long[] valueEnds, long[] nameLocalStarts,
+                              boolean[] valueEntities, int size) {
         this.segment = segment; this.nameStarts = nameStarts; this.nameEnds = nameEnds;
-        this.valueStarts = valueStarts; this.valueEnds = valueEnds; this.size = size; return this;
+        this.valueStarts = valueStarts; this.valueEnds = valueEnds;
+        this.nameLocalStarts = nameLocalStarts; this.valueEntities = valueEntities;
+        this.size = size; return this;
     }
     public int size() { return size; }
-    public DirectXmlByteSlice name(int index) { check(index); return name.reset(segment, nameStarts[index], nameEnds[index]); }
-    public DirectXmlByteSlice rawValue(int index) { check(index); return value.reset(segment, valueStarts[index], valueEnds[index]); }
+    // The scanner already found the colon and the entities: the slice must not look again.
+    public DirectXmlByteSlice name(int index) {
+        check(index);
+        return name.reset(segment, nameStarts[index], nameEnds[index], nameLocalStarts[index], false);
+    }
+    public DirectXmlByteSlice rawValue(int index) {
+        check(index);
+        return value.reset(segment, valueStarts[index], valueEnds[index], valueStarts[index], valueEntities[index]);
+    }
     public int findAscii(byte[] expectedName) {
         for (int i = 0; i < size; i++) if (name.reset(segment, nameStarts[i], nameEnds[i]).equalsAscii(expectedName)) return i;
         return -1;

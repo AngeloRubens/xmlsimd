@@ -24,6 +24,16 @@ public enum VerticalProfile {
         @Override VerticalMessageInfo inspect(SimdXmlParser parser, byte[] input) {
             return parser.inspectPayment(input);
         }
+    },
+    HL7_V2("hl7v2", "hl7_v2") {
+        @Override VerticalMessageInfo inspect(SimdXmlParser parser, byte[] input) {
+            return parser.inspectHl7v2(input);
+        }
+    },
+    FHIR("fhir") {
+        @Override VerticalMessageInfo inspect(SimdXmlParser parser, byte[] input) {
+            return parser.inspectFhir(input);
+        }
     };
 
     private final String[] configurationNames;

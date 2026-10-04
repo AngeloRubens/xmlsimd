@@ -58,12 +58,12 @@ final class SimdJakartaUnmarshaller implements Unmarshaller {
     @Override public Object unmarshal(org.w3c.dom.Node node) throws JAXBException { return unmarshal(new DOMSource(node)); }
     @Override public Object unmarshal(javax.xml.stream.XMLStreamReader reader) throws JAXBException {
         if (schema != null) return unmarshal(staxSource(reader));
-        try { if(listener!=null)listener.beforeUnmarshal(null,null); Object value=coreUnmarshaller.unmarshal(reader); if(listener!=null)listener.afterUnmarshal(value,null); return value; }
+        try { if(listener!=null)listener.beforeUnmarshal(null,null); Object value=configured().unmarshal(reader); if(listener!=null)listener.afterUnmarshal(value,null); return value; }
         catch (RuntimeException failure) { throw new UnmarshalException(failure); }
     }
     @Override public Object unmarshal(javax.xml.stream.XMLEventReader reader) throws JAXBException {
         if (schema != null) return unmarshal(staxSource(reader));
-        try { if(listener!=null)listener.beforeUnmarshal(null,null); Object value=coreUnmarshaller.unmarshal(reader); if(listener!=null)listener.afterUnmarshal(value,null); return value; }
+        try { if(listener!=null)listener.beforeUnmarshal(null,null); Object value=configured().unmarshal(reader); if(listener!=null)listener.afterUnmarshal(value,null); return value; }
         catch (RuntimeException failure) { throw new UnmarshalException(failure); }
     }
     @Override public <T> JAXBElement<T> unmarshal(Source source, Class<T> type) throws JAXBException {
@@ -76,14 +76,14 @@ final class SimdJakartaUnmarshaller implements Unmarshaller {
         if (schema != null) return unmarshal(staxSource(reader), type);
         try {
             javax.xml.namespace.QName name = staxRoot(reader);
-            return new JAXBElement<T>(name, type, coreUnmarshaller.unmarshal(reader, type));
+            return new JAXBElement<T>(name, type, configured().unmarshal(reader, type));
         } catch (RuntimeException failure) { throw new UnmarshalException(failure); }
     }
     @Override public <T> JAXBElement<T> unmarshal(javax.xml.stream.XMLEventReader reader, Class<T> type) throws JAXBException {
         if (schema != null) return unmarshal(staxSource(reader), type);
         try {
             javax.xml.namespace.QName name = staxRoot(reader);
-            return new JAXBElement<T>(name, type, coreUnmarshaller.unmarshal(reader, type));
+            return new JAXBElement<T>(name, type, configured().unmarshal(reader, type));
         } catch (javax.xml.stream.XMLStreamException failure) { throw new UnmarshalException(failure); }
         catch (RuntimeException failure) { throw new UnmarshalException(failure); }
     }
@@ -100,7 +100,7 @@ final class SimdJakartaUnmarshaller implements Unmarshaller {
         try {
             validate(xml);
             if (listener != null) listener.beforeUnmarshal(null, null);
-            Object value = coreUnmarshaller.unmarshal(xml);
+            Object value = configured().unmarshal(xml);
             if (listener != null) listener.afterUnmarshal(value, null);
             return value;
         } catch (RuntimeException e) { throw new UnmarshalException(e); }
@@ -108,7 +108,7 @@ final class SimdJakartaUnmarshaller implements Unmarshaller {
     private <T> JAXBElement<T> declared(byte[] xml, Class<T> type) throws JAXBException {
         try {
             validate(xml);
-            T value = coreUnmarshaller.unmarshal(xml, type);
+            T value = configured().unmarshal(xml, type);
             return new JAXBElement<>(org.simdxml.XmlRootNameResolver.resolve(xml), type, value);
         } catch (RuntimeException e) { throw new UnmarshalException(e); }
     }
@@ -155,6 +155,7 @@ final class SimdJakartaUnmarshaller implements Unmarshaller {
     @Override public Schema getSchema() { return schema; }
     @Override public void setAttachmentUnmarshaller(AttachmentUnmarshaller value) { attachments = value; }
     @Override public AttachmentUnmarshaller getAttachmentUnmarshaller() { return attachments; }
+    private org.simdxml.SimdUnmarshaller configured() { return coreUnmarshaller.withAttachmentHandler(JakartaAttachmentBridge.unmarshaller(attachments)); }
     @Override public void setListener(Listener value) { listener = value; }
     @Override public Listener getListener() { return listener; }
     @Override public void setProperty(String name, Object value) throws PropertyException { throw new PropertyException(name, value); }
@@ -180,6 +181,6 @@ final class SimdJakartaUnmarshaller implements Unmarshaller {
     private static Object unmarshalValue(XmlAdapter adapter, Object value) throws Exception { return adapter.unmarshal(value); }
     @Override @SuppressWarnings("unchecked") public <A extends XmlAdapter<?, ?>> A getAdapter(Class<A> type) { return (A) adapters.get(type); }
     @Override public UnmarshallerHandler getUnmarshallerHandler() {
-        return new SaxUnmarshallerHandler(coreUnmarshaller, schema, listener);
+        return new SaxUnmarshallerHandler(configured(), schema, listener);
     }
 }

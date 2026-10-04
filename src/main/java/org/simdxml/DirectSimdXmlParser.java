@@ -5,7 +5,17 @@ import java.lang.foreign.ValueLayout;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 
-/** Allocation-bounded, zero-copy XML event scanner for heap/off-heap MemorySegment and ByteBuffer. */
+/**
+ * Allocation-bounded, zero-copy XML event scanner for heap/off-heap MemorySegment and ByteBuffer.
+ *
+ * <p><b>Object binding on this path is namespace-free.</b> {@link #bind} matches elements and
+ * attributes by local name only and rejects a document that carries a prefix or an {@code xmlns}
+ * declaration, throwing {@link XmlBindingException}. It also does not apply {@code XmlAdapter}s or
+ * {@code @XmlElementWrapper} wrappers. Documents with namespaces, wrappers, adapters or otherwise
+ * complex JAXB models belong on the standard binder, reached through {@code SimdJaxbContext} and
+ * {@code SimdUnmarshaller}; scanning ({@link #scan}) has no such restriction and handles any
+ * well-formed document.
+ */
 public final class DirectSimdXmlParser extends AbstractXmlParser {
     public static DirectSimdXmlParserBuilder builder() { return new DirectSimdXmlParserBuilder(); }
     private static final ValueLayout.OfLong LONG = ValueLayout.JAVA_LONG_UNALIGNED;
@@ -18,6 +28,8 @@ public final class DirectSimdXmlParser extends AbstractXmlParser {
     private long[] starts = new long[16], ends = new long[16];
     private int[] hashes = new int[16];
     private long[] attrStarts = new long[8], attrEnds = new long[8], attrValueStarts = new long[8], attrValueEnds = new long[8];
+    private long[] attrLocalStarts = new long[8];
+    private boolean[] attrValueEntities = new boolean[8];
     private int[] attrHashes = new int[8];
     private long[] markupPositions = new long[4096], entityPositions = new long[1024];
     private int markupSize, entitySize, markupCursor, entityCursor;
@@ -25,6 +37,7 @@ public final class DirectSimdXmlParser extends AbstractXmlParser {
     private final DirectXmlByteSlice name = new DirectXmlByteSlice();
     private final DirectXmlByteSlice text = new DirectXmlByteSlice();
     private final DirectXmlAttributes attributes = new DirectXmlAttributes();
+    private DirectXmlBeanBinder beanBinder;
     private DirectXmlEventConsumer consumer;
     private DirectXmlEventConsumerEx extendedConsumer;
     private final DirectHealthcareSoapInspector healthcareInspector = new DirectHealthcareSoapInspector(this);
@@ -43,6 +56,18 @@ public final class DirectSimdXmlParser extends AbstractXmlParser {
     }
     public HealthcareMessageInfo inspectHealthcare(MemorySegment input) { return healthcareInspector.inspect(input); }
     public HealthcareMessageInfo inspectHealthcare(ByteBuffer input) { return healthcareInspector.inspect(MemorySegment.ofBuffer(input.slice())); }
+    /** Direct FFM/Vector binding path; values remain in DirectXmlByteSlice until bean conversion. */
+    public <T> T bind(MemorySegment input, Class<T> type) {
+        // The parser already owns request-local mutable state, so the binder is pooled with it.
+        DirectXmlBeanBinder binder = beanBinder;
+        if (binder == null) beanBinder = binder = new DirectXmlBeanBinder(type);
+        else binder.reset(type);
+        scan(input, binder);
+        return type.cast(binder.result());
+    }
+    public <T> T bind(ByteBuffer input, Class<T> type) {
+        return bind(MemorySegment.ofBuffer(input.slice()), type);
+    }
 
     public void scan(ByteBuffer buffer, DirectXmlEventConsumer consumer) {
         scan(MemorySegment.ofBuffer(buffer.slice()), consumer);
@@ -75,10 +100,10 @@ public final class DirectSimdXmlParser extends AbstractXmlParser {
             if (b(p) != '<') {
                 long from = p;
                 p = findByte(p, end, (byte) '<');
-                validateEntities(from, p);
+                boolean entities = validateEntities(from, p);
                 if (depth == 0) {
                     if (!onlySpace(from, p)) fail("Character data outside root element", from);
-                } else if (p > from) emit(XmlEvent.TEXT, null, text.reset(in, from, p), 0);
+                } else if (p > from) emit(XmlEvent.TEXT, null, text.reset(in, from, p, from, entities), 0);
                 continue;
             }
             byte kind = peek(1);
@@ -99,27 +124,29 @@ public final class DirectSimdXmlParser extends AbstractXmlParser {
 
     private void open() {
         long markup = p++;
-        long ns = p; int hash = scanName(); long ne = p;
+        long ns = p; int hash = scanName(); long ne = p; long nl = lastLocalStart;
         boolean separated = p < end && space(b(p));
         skipSpace(); int attrCount = 0;
         while (p < end && b(p) != '>' && !(b(p) == '/' && peek(1) == '>')) {
             if (!separated) fail("Whitespace required before attribute", p);
-            long as = p; int ah = scanName(); long ae = p;
+            long as = p; int ah = scanName(); long ae = p; long al = lastLocalStart;
             for (int i = 0; i < attrCount; i++)
                 if (attrHashes[i] == ah && ae - as == attrEnds[i] - attrStarts[i] && same(as, attrStarts[i], ae - as))
                     fail("Duplicate attribute", as);
-            ensureAttrs(attrCount + 1); attrStarts[attrCount] = as; attrEnds[attrCount] = ae; attrHashes[attrCount++] = ah;
+            ensureAttrs(attrCount + 1); attrStarts[attrCount] = as; attrEnds[attrCount] = ae;
+            attrLocalStarts[attrCount] = al; attrHashes[attrCount++] = ah;
             skipSpace(); expect('='); skipSpace(); byte quote = peek(0);
             if (quote != '\'' && quote != '"') fail("Attribute value must be quoted", p);
             long valueStart = ++p; p = findByte(p, end, quote);
             if (p == end) fail("Unclosed attribute value", valueStart);
-            validateEntities(valueStart, p); attrValueStarts[attrCount - 1] = valueStart; attrValueEnds[attrCount - 1] = p; p++;
+            attrValueEntities[attrCount - 1] = validateEntities(valueStart, p);
+            attrValueStarts[attrCount - 1] = valueStart; attrValueEnds[attrCount - 1] = p; p++;
             separated = p < end && space(b(p)); skipSpace();
         }
         boolean empty = p < end && b(p) == '/'; if (empty) p++; expect('>');
         if (depth == 0) { if (rootSeen) fail("Multiple root elements", markup); rootSeen = true; }
-        emit(XmlEvent.START_ELEMENT, name.reset(in, ns, ne), null, attrCount);
-        if (empty) emit(XmlEvent.END_ELEMENT, name.reset(in, ns, ne), null, 0);
+        emit(XmlEvent.START_ELEMENT, name.reset(in, ns, ne, nl, false), null, attrCount);
+        if (empty) emit(XmlEvent.END_ELEMENT, name.reset(in, ns, ne, nl, false), null, 0);
         else {
             if (depth >= maxDepth) fail("Maximum depth exceeded", markup);
             ensureDepth(depth + 1); starts[depth] = ns; ends[depth] = ne; hashes[depth] = hash; depth++;
@@ -127,13 +154,13 @@ public final class DirectSimdXmlParser extends AbstractXmlParser {
     }
 
     private void close() {
-        long markup = p; p += 2; long ns = p; int hash = scanName(); long ne = p;
+        long markup = p; p += 2; long ns = p; int hash = scanName(); long ne = p; long nl = lastLocalStart;
         skipSpace(); expect('>');
         if (depth == 0) fail("Unexpected closing tag", markup);
         int top = depth - 1;
         if (hashes[top] != hash || ends[top] - starts[top] != ne - ns || !same(starts[top], ns, ne - ns))
             fail("Mismatched closing tag", markup);
-        depth = top; emit(XmlEvent.END_ELEMENT, name.reset(in, ns, ne), null, 0);
+        depth = top; emit(XmlEvent.END_ELEMENT, name.reset(in, ns, ne, nl, false), null, 0);
     }
 
     private void comment() {
@@ -146,7 +173,7 @@ public final class DirectSimdXmlParser extends AbstractXmlParser {
         if (depth == 0) fail("CDATA outside root element", p);
         long from = p + 9, close = find(from, XmlByteUtils.CDATA_CLOSE);
         if (close < 0) fail("Unclosed CDATA", p);
-        p = close + 3; emit(XmlEvent.CDATA, null, text.reset(in, from, close), 0);
+        p = close + 3; emit(XmlEvent.CDATA, null, text.reset(in, from, close, from, false), 0);
     }
     private void processingInstruction() {
         long offset = p; p += 2; long ns = p; scanName(); long ne = p;
@@ -161,28 +188,64 @@ public final class DirectSimdXmlParser extends AbstractXmlParser {
 
     private void emit(XmlEvent event, DirectXmlByteSlice eventName, DirectXmlByteSlice eventText, int attributeCount) {
         if (extendedConsumer != null) extendedConsumer.onEvent(event, eventName, eventText,
-                attributes.reset(in, attrStarts, attrEnds, attrValueStarts, attrValueEnds, attributeCount));
+                attributes.reset(in, attrStarts, attrEnds, attrValueStarts, attrValueEnds,
+                        attrLocalStarts, attrValueEntities, attributeCount));
         else consumer.onEvent(event, eventName, eventText);
     }
 
+    /**
+     * Hashes the name and records where its local part starts in {@link #lastLocalStart}. The scan
+     * already visits every byte, so the colon costs nothing here; rediscovering it later in
+     * {@code DirectXmlByteSlice.local} was the hottest frame of the whole Direct path.
+     */
     private int scanName() {
-        if (p >= end || !nameStart(b(p))) fail("Expected XML name", p);
+        final long limit = end;
+        long i = p;
+        if (i >= limit || !nameStart(b(i))) fail("Expected XML name", i);
         int hash = 0x811c9dc5;
-        do { hash = (hash ^ (b(p++) & 0xff)) * 0x01000193; } while (p < end && namePart(b(p)));
+        long localStart = i;
+        // Each byte was loaded twice before — once to hash it, once as the next loop condition.
+        byte value = b(i);
+        do {
+            hash = (hash ^ (value & 0xff)) * 0x01000193;
+            if (value == ':') localStart = i + 1;
+            if (++i >= limit) break;
+            value = b(i);
+        }
+        while (namePart(value));
+        p = i;
+        lastLocalStart = localStart;
         return hash;
     }
-    private void validateEntities(long from, long to) {
-        for (long i = findByte(from, to, (byte)'&'); i < to; i = findByte(i + 1, to, (byte)'&')) {
-            long semi = i + 1; while (semi < to && b(semi) != ';') semi++;
-            if (semi == to) fail("Unclosed entity reference", i);
-            if (!entity(i + 1, semi)) fail("Unknown or malformed entity reference", i);
-            i = semi;
+    /** Returns whether the run contains at least one entity reference; the binder reuses the answer. */
+    private boolean validateEntities(long from, long to) {
+        // Process entities in batches to reduce findByte calls
+        long i = from;
+        boolean any = false;
+        while (i < to) {
+            long ampPos = findByte(i, to, (byte)'&');
+            if (ampPos >= to) break; // No more '&' found
+            any = true;
+
+            long semi = ampPos + 1;
+            while (semi < to && b(semi) != ';') semi++;
+            if (semi == to) fail("Unclosed entity reference", ampPos);
+            if (!entity(ampPos + 1, semi)) fail("Unknown or malformed entity reference", ampPos);
+            i = semi + 1;
         }
+        return any;
     }
     private boolean entity(long from, long to) {
-        if (ascii(from, to, "lt") || ascii(from, to, "gt") || ascii(from, to, "amp")
-                || ascii(from, to, "apos") || ascii(from, to, "quot")) return true;
-        if (from >= to || b(from) != '#') return false;
+        if (from >= to) return false;
+        if (b(from) != '#') {
+            // One length dispatch instead of rescanning the reference against five literals.
+            switch ((int) (to - from)) {
+                case 2: return matches(from, LT) || matches(from, GT);
+                case 3: return matches(from, AMP);
+                case 4: return matches(from, APOS) || matches(from, QUOT);
+                default: return false;
+            }
+        }
         long i = from + 1; int radix = 10;
         if (i < to && (b(i) == 'x' || b(i) == 'X')) { radix = 16; i++; }
         if (i == to) return false; int cp = 0;
@@ -196,10 +259,19 @@ public final class DirectSimdXmlParser extends AbstractXmlParser {
     }
 
     private void validateUtf8() {
+        // Process 64 bytes at a time for better throughput
         long i = 0;
+        while (i + 64 <= end) {
+            long high1 = word(i) | word(i + 8) | word(i + 16) | word(i + 24);
+            long high2 = word(i + 32) | word(i + 40) | word(i + 48) | word(i + 56);
+            if (((high1 | high2) & HIGH_BITS) != 0) break;
+            i += 64;
+        }
+        // Process remaining 32-byte chunks
         while (i + 32 <= end) {
             long high = word(i) | word(i + 8) | word(i + 16) | word(i + 24);
-            if ((high & HIGH_BITS) != 0) break; i += 32;
+            if ((high & HIGH_BITS) != 0) break;
+            i += 32;
         }
         while (i < end) {
             if (i + 8 <= end && (word(i) & HIGH_BITS) == 0) { i += 8; continue; }
@@ -215,6 +287,7 @@ public final class DirectSimdXmlParser extends AbstractXmlParser {
         }
     }
 
+    private long lastLocalStart;
     private byte b(long at) { return DirectUnsafeAccess.getByte(in, at); }
     private long word(long at) { return DirectUnsafeAccess.getLong(in, at); }
     private byte peek(long delta) { return p + delta < end ? b(p + delta) : 0; }
@@ -273,17 +346,42 @@ public final class DirectSimdXmlParser extends AbstractXmlParser {
     private static DirectByteFinder selectFinder() {
         String requested = System.getProperty("org.simdxml.direct.strategy", "auto");
         if (requested.equals("swar") || requested.equals("scalar")) return new ScalarDirectByteFinder();
-        try { return (DirectByteFinder) Class.forName("org.simdxml.VectorDirectByteFinder").getDeclaredConstructor().newInstance(); }
-        catch (ReflectiveOperationException | LinkageError unavailable) {
-            if (requested.equals("vector")) throw new IllegalStateException("Direct Vector backend unavailable", unavailable);
+        boolean forced = requested.equals("vector");
+        try {
+            Class<?> type = Class.forName("org.simdxml.VectorDirectByteFinder");
+            // On a 128-bit species the vector finder has measured slower than SWAR-64 at every
+            // document size, so "auto" keeps SWAR there. -Dorg.simdxml.direct.strategy=vector
+            // still forces it, which is what the A/B benchmark uses.
+            if (!forced && !((Boolean) type.getDeclaredMethod("beatsSwar").invoke(null)).booleanValue())
+                return new ScalarDirectByteFinder();
+            return (DirectByteFinder) type.getDeclaredConstructor().newInstance();
+        } catch (ReflectiveOperationException | LinkageError unavailable) {
+            if (forced) throw new IllegalStateException("Direct Vector backend unavailable", unavailable);
             return new ScalarDirectByteFinder();
         }
     }
-    private boolean same(long a,long c,long length){for(long i=0;i<length;i++)if(b(a+i)!=b(c+i))return false;return true;}
-    private boolean ascii(long from,long to,String value){if(to-from!=value.length())return false;for(int i=0;i<value.length();i++)if(b(from+i)!=(byte)value.charAt(i))return false;return true;}
+    private static final byte[] LT={'l','t'}, GT={'g','t'}, AMP={'a','m','p'}, APOS={'a','p','o','s'}, QUOT={'q','u','o','t'};
+
+    private boolean matches(long from, byte[] token) {
+        for (int i = 0; i < token.length; i++) if (b(from + i) != token[i]) return false;
+        return true;
+    }
+
+    /**
+     * Word-at-a-time name comparison. Two words read the same way are equal in exactly the same
+     * cases whichever endianness the machine uses — equality, unlike ordering, needs no assumption
+     * about byte order — so this stays correct while cutting the per-byte reads by eight.
+     */
+    private boolean same(long a,long c,long length){
+        long i = 0;
+        for (; i + 8 <= length; i += 8)
+            if (DirectUnsafeAccess.getLong(in, a + i) != DirectUnsafeAccess.getLong(in, c + i)) return false;
+        for (; i < length; i++) if (b(a + i) != b(c + i)) return false;
+        return true;
+    }
     private boolean asciiIgnoreCase(long from,long to,byte[] value){if(to-from!=value.length)return false;for(int i=0;i<value.length;i++){int x=b(from+i)&255,y=value[i]&255;if(x>='a'&&x<='z')x-=32;if(x!=y)return false;}return true;}
     private void ensureDepth(int needed){if(needed<=starts.length)return;int n=Math.min(maxDepth,Math.max(needed,starts.length<<1));starts=Arrays.copyOf(starts,n);ends=Arrays.copyOf(ends,n);hashes=Arrays.copyOf(hashes,n);}
-    private void ensureAttrs(int needed){if(needed<=attrStarts.length)return;int n=attrStarts.length<<1;attrStarts=Arrays.copyOf(attrStarts,n);attrEnds=Arrays.copyOf(attrEnds,n);attrValueStarts=Arrays.copyOf(attrValueStarts,n);attrValueEnds=Arrays.copyOf(attrValueEnds,n);attrHashes=Arrays.copyOf(attrHashes,n);}
+    private void ensureAttrs(int needed){if(needed<=attrStarts.length)return;int n=attrStarts.length<<1;while(n<needed)n<<=1;attrStarts=Arrays.copyOf(attrStarts,n);attrEnds=Arrays.copyOf(attrEnds,n);attrValueStarts=Arrays.copyOf(attrValueStarts,n);attrValueEnds=Arrays.copyOf(attrValueEnds,n);attrHashes=Arrays.copyOf(attrHashes,n);attrLocalStarts=Arrays.copyOf(attrLocalStarts,n);attrValueEntities=Arrays.copyOf(attrValueEntities,n);}
     private static boolean continuation(byte value){return(value&0xc0)==0x80;}
     private static boolean space(byte value){return value==' '||value=='\t'||value=='\n'||value=='\r';}
     private static boolean letter(byte value){return value>='A'&&value<='Z'||value>='a'&&value<='z';}

@@ -9,8 +9,10 @@ import java.util.Set;
 /** Immutable-to-callers small map: the common 1-4 XML attributes need no table or node objects. */
 final class SmallAttributeMap extends AbstractMap<String, String> {
     private String k0, v0, k1, v1, k2, v2, k3, v3;
+    /* attributes() is public API and reported in document order, so the overflow keeps insertion order. */
     private LinkedHashMap<String, String> overflow;
     private int size;
+
 
     boolean putUnique(String key, String value) {
         if (get(key) != null) return false;
@@ -38,7 +40,7 @@ final class SmallAttributeMap extends AbstractMap<String, String> {
     }
     @Override public int size() { return size; }
     @Override public Set<Entry<String, String>> entrySet() {
-        LinkedHashSet<Entry<String, String>> entries = new LinkedHashSet<>(size);
+        LinkedHashSet<Entry<String, String>> entries = new LinkedHashSet<>(size * 2);
         if (size > 0) entries.add(new SimpleImmutableEntry<String, String>(k0, v0));
         if (size > 1) entries.add(new SimpleImmutableEntry<String, String>(k1, v1));
         if (size > 2) entries.add(new SimpleImmutableEntry<String, String>(k2, v2));

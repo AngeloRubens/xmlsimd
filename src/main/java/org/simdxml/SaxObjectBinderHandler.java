@@ -17,9 +17,15 @@ final class SaxObjectBinderHandler extends DefaultHandler {
     private int skippedDepth;
     private Object result;
     private final Map<String,ArrayDeque<String>> namespaceScopes=new java.util.HashMap<String,ArrayDeque<String>>();
+    private final XmlAttachmentHandler attachments;
 
     SaxObjectBinderHandler(Map<XmlExpandedName, Class<?>> roots, Map<Class<?>, XmlBindingAdapter> adapters) {
-        this.roots = roots; this.adapters = adapters;
+        this(roots, adapters, null);
+    }
+
+    SaxObjectBinderHandler(Map<XmlExpandedName, Class<?>> roots, Map<Class<?>, XmlBindingAdapter> adapters,
+            XmlAttachmentHandler attachments) {
+        this.roots = roots; this.adapters = adapters; this.attachments = attachments;
     }
 
     Object result() { if (result == null) throw new IllegalStateException("SAX document has not completed"); return result; }
@@ -31,6 +37,17 @@ final class SaxObjectBinderHandler extends DefaultHandler {
     @Override public void startElement(String uri, String local, String qName, Attributes attributes) throws SAXException {
         if (skippedDepth != 0) { skippedDepth++; return; }
         String localName = local == null || local.isEmpty() ? local(qName) : local;
+        // <xop:Include/> replaces the content of the binary element already on the stack.
+        if (attachments != null && !stack.isEmpty() && "Include".equals(localName)) {
+            Frame parent = stack.peek();
+            boolean xop = XmlBinder.XOP_INCLUDE_NAMESPACE.equals(uri)
+                    || (uri == null || uri.isEmpty()) && qName != null && qName.startsWith("xop:");
+            if (xop && parent.parentProperty != null && parent.parentProperty.binary()) {
+                String href = attributes.getValue("href");
+                if (href == null || !href.startsWith("cid:")) throw new SAXException("Invalid XOP href");
+                parent.contentId = href.substring(4); skippedDepth = 1; return;
+            }
+        }
         XmlExpandedName name = new XmlExpandedName(uri, localName);
         Class<?> type; XmlBindingMetadata.Property parentProperty = null;
         if (stack.isEmpty()) {
@@ -70,6 +87,7 @@ final class SaxObjectBinderHandler extends DefaultHandler {
         Frame frame=stack.pop(); Object value;
         if(frame.wrapper){Frame parent=stack.peek();parent.values[frame.parentProperty.index()]=frame.items;return;}
         if(frame.nil)value=null;
+        else if(attachments!=null&&frame.parentProperty!=null&&frame.parentProperty.binary())value=binaryValue(frame,frame.parentProperty);
         else if(XmlBindingMetadata.scalar(frame.type)){String lexical=frame.text.toString();if(lexical.isEmpty()&&frame.parentProperty!=null&&frame.parentProperty.defaultValue()!=null)lexical=frame.parentProperty.defaultValue();value=frame.type==javax.xml.namespace.QName.class?resolveQName(lexical):frame.parentProperty!=null&&frame.parentProperty.hexBinary()
                 ?frame.parentProperty.convert(lexical):XmlBindingMetadata.convert(lexical,frame.type);}
         else {
@@ -85,6 +103,19 @@ final class SaxObjectBinderHandler extends DefaultHandler {
             @SuppressWarnings("unchecked") List<Object> list=(List<Object>)parent.values[property.index()];
             if(list==null)parent.values[property.index()]=list=new ArrayList<Object>(); list.add(value);
         }else parent.values[property.index()]=value;
+    }
+
+    /** Mirrors {@code XmlBinder.readAttachment} for the push parser: XOP, swaRef, then inline base64. */
+    private Object binaryValue(Frame frame,XmlBindingMetadata.Property property) {
+        if (frame.contentId != null) return XmlBinder.attachmentValue(attachments, property, frame.contentId);
+        String text = frame.text.toString();
+        if (property.attachmentRef()) {
+            String uri = text.trim(); if (uri.isEmpty()) return null;
+            return XmlBinder.attachmentValue(attachments, property, uri.startsWith("cid:") ? uri.substring(4) : uri);
+        }
+        if (property.xmlType() == byte[].class) return property.convert(text);
+        String encoded = text.trim(); if (encoded.isEmpty()) return null;
+        return attachments.fromBytes(java.util.Base64.getMimeDecoder().decode(encoded), property.mimeType());
     }
 
     private Object adapt(XmlBindingMetadata.Property property,Object value) throws SAXException {
@@ -104,7 +135,7 @@ final class SaxObjectBinderHandler extends DefaultHandler {
     private javax.xml.namespace.QName resolveQName(String lexical)throws SAXException{String value=lexical.trim();int colon=value.indexOf(':');String prefix=colon<0?"":value.substring(0,colon),local=colon<0?value:value.substring(colon+1);ArrayDeque<String> values=namespaceScopes.get(prefix);String uri=values==null||values.isEmpty()?"":values.peek();if(!prefix.isEmpty()&&uri.isEmpty())throw new SAXException("Unbound QName prefix: "+prefix);return new javax.xml.namespace.QName(uri,local,prefix);}
     private static final class Frame{
         final Class<?> type; final XmlBindingMetadata.Property parentProperty; final List<XmlBindingMetadata.Property> properties;final boolean wrapper,nil;final List<Object> items;
-        final Object[] values; final StringBuilder text=new StringBuilder();
+        final Object[] values; final StringBuilder text=new StringBuilder(); String contentId;
         Frame(Class<?> type,XmlBindingMetadata.Property parentProperty){this(type,parentProperty,false);}
         Frame(Class<?> type,XmlBindingMetadata.Property parentProperty,boolean nil){this.type=type;this.parentProperty=parentProperty;this.wrapper=false;this.nil=nil;this.items=null;properties=XmlBindingMetadata.scalar(type)?java.util.Collections.<XmlBindingMetadata.Property>emptyList():XmlBindingMetadata.properties(type);values=new Object[properties.size()];}
         private Frame(XmlBindingMetadata.Property property){type=null;parentProperty=property;wrapper=true;nil=false;items=new ArrayList<Object>();properties=java.util.Collections.emptyList();values=new Object[0];}

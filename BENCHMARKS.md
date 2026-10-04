@@ -115,6 +115,11 @@ checksum, JVM flags and sequential process isolation. These are local JRE 25 mea
 | SOAP + HL7 1,809 B (**documents/s**) | 118,598 byte / 131,416 direct | n/a | 68,660 (**+72.7% / +91.4%**) | — | — | — |
 | JAXB-style 863-byte book graph (**objects/s**) | 76,231 | 12,630 | n/a | n/a | n/a | n/a |
 
+In this table Jackson is measured as an **event stream** (`XmlFactory` driving a `JsonParser`
+token loop), not as an object binder: the row compares tokenization, and no object-binding
+comparison against Jackson exists outside the JMH section below. The binding rows count
+**objects/s**, the JMH section counts **messages/s**.
+
 `—` means that a number was not published for that fixture in this run; it is not a claim that the
 library cannot process that document. `n/a` means that the library does not expose the same
 projection in this runner. The executable comparison is
@@ -151,7 +156,197 @@ the same checksum. The Wiki byte-flyweight benchmark reached 203.62 MiB/s versus
 (+0.7%), also with the same checksum. These small differences are treated as run-to-run variation,
 but demonstrate that namespace support did not impose a measurable regression on unqualified XML.
 
+### Without the Vector API
+
+The same benchmark run on a JVM started **without** `--add-modules jdk.incubator.vector`, so
+`StructuralIndexer` falls back to `unsafe-swar64` and the direct finder to `memorysegment-swar64`
+(both verified through `indexingStrategy()`/`memoryStrategy()`):
+
+| implementation | 4 books | 32 books | 256 books |
+|---|---:|---:|---:|
+| simdxml, no Vector API | 427,310 ± 56,956 | 71,566 ± 2,062 | 7,941 ± 152 |
+| Jackson XML (control) | 210,506 ± 7,106 | 42,163 ± 2,184 | 5,800 ± 251 |
+| **simdxml advantage** | **+103.0%** | **+69.7%** | **+36.9%** |
+
+simdxml stays ahead of Jackson at every size with no incubator module, which matters for Java 8/17
+deployments. The Vector API contributes only where the structural index is actually built, i.e.
+above the 4,096-byte `tiny` threshold: 9,787 vs 7,941 messages/s at 256 books, **+23.2%**. At 4 and
+32 books the two configurations execute the same code, and the differences are run-to-run noise.
+
+`gc.alloc.rate.norm` is byte-identical between the two configurations (7,264.098 vs 7,264.094 B/op
+at 32 books), which confirms that the flyweight/reuse machinery lives in the reader and binder, not
+in the stage-1 backend.
+
+The Direct/FFM binder is actually *faster* without the Vector API (45,128 vs 43,238 at 32 books;
+5,773 vs 5,535 at 256): its 16-byte `MemorySegment` vector finder does not repay its overhead
+against the SWAR one, and should be re-examined.
+
 ## Object binding: complex JAXB graph
+
+### JMH allocation and GC benchmark
+
+`ObjectBindingGcBenchmark` measures the same JAXB-annotated `Catalog` model with the regular
+simdxml binder, the Direct/FFM binder (`simdxml-direct`), JAXB RI and Jackson XML. Contexts/mappers
+and fixture bytes are created in `@Setup`, outside the measured operation. The Direct/FFM variant
+currently measures unmarshal on a prevalidated native `MemorySegment`; run it with JMH's GC profiler:
+
+```shell
+mvn -DskipTests test-compile dependency:build-classpath -Dmdep.outputFile=/tmp/simdxml-cp
+CP="target/classes:target/test-classes:$(cat /tmp/simdxml-cp)"
+java --add-modules jdk.incubator.vector -cp "$CP" org.openjdk.jmh.Main \
+  'org.simdxml.ObjectBindingGcBenchmark.bind' -prof gc \
+  -p library=simdxml,simdxml-direct,jaxb-ri,jackson -p operation=unmarshal -p books=32
+```
+
+The primary result is throughput (`ops/s`, one XML message per operation). The GC profiler adds
+`gc.alloc.rate.norm` (allocated bytes/message), `gc.count` and `gc.time`; allocated bytes are the
+portable proxy for object pressure. Exact object counts require an allocation-event profiler and
+are not inferred from GC cycles. Use the same JDK/VM, heap, GC and CPU affinity for all libraries;
+JMH warns that OpenJ9 is not a supported VM, so release comparisons should use a HotSpot build.
+
+> **Any Jackson figure recorded on this page before 2026-08-22 is void.** `XmlMapper` does not
+> read JAXB annotations, so the benchmark model bound **zero** books: Jackson was timed while
+> parsing the document and discarding its content. The model now also carries
+> `@JacksonXmlProperty`/`@JacksonXmlElementWrapper`/`@JacksonXmlText`, and `@Setup` fails the run
+> unless every backend materializes the same graph. Re-measured allocation shows the difference:
+> Jackson went from 9,352 to 11,392 bytes/message once it actually bound the 32 books.
+
+### Allocated bytes per message (deterministic)
+
+Allocation counters do not depend on CPU contention, and these reproduced to the byte across three
+independent runs (JDK 25, G1, two forks, 5 warmup + 8 measured iterations, `-prof gc`, identical
+fixture, equivalence asserted in `@Setup`):
+
+| implementation | 4 books (191 B) | 32 books (1,407 B) | 256 books (11,575 B) |
+|---|---:|---:|---:|
+| **simdxml** | **928.013** | **7,264.085** | 68,144.663 |
+| JAXB RI | 2,152.071 | 10,728.267 | 83,225.843 |
+| Jackson XML | 3,936.032 | 11,392.149 | 74,913.181 |
+| simdxml Direct/FFM | 928.016 | 7,264.109 | **61,848.922** |
+
+simdxml allocates **76.4% less** than Jackson on a 4-book message, **36.2% less** on a 32-book
+message and **9.0% less** on a 256-book message.
+
+The 256-book figure was 76,368.732 until a per-element allocation was removed on 2026-08-27:
+`XmlBinder.directBean` iterated `plan.properties`, a `Collections.unmodifiableList` whose
+`iterator()` allocates a wrapper on every call, once per element. 257 elements × 32 bytes = 8,224
+bytes, exactly the measured difference. The predicate is now precomputed on `BindingPlan`.
+
+The Direct/FFM row was re-measured on 2026-08-27 and replaces the 2,232 / 16,184 / 131,698 recorded
+earlier: the Direct binder now allocates **exactly what the standard binder allocates** at 4 and 32
+books, and **17.4% less than Jackson** at 256 books. Two binders that share no reader, no namespace
+frame, no attribute map and no name strings landing on the same byte count is the strongest evidence
+available that neither allocates anything beyond the bound graph at those sizes.
+
+One message is one operation here. The older binding tables on this page count **objects/s**
+(33 objects per 32-book message), so 76,231 objects/s and ~2,300 messages/s describe the same run;
+never compare the two columns directly.
+
+### Throughput
+
+Same run, machine idle (load average 0.29 before the run; a first attempt was discarded because a
+concurrent workload pushed the JMH error to 66% of the score). Every interval below is disjoint
+from its neighbours, with errors between 0.8% and 2.5% of the score:
+
+| implementation | 4 books (191 B) | 32 books (1,407 B) | 256 books (11,575 B) |
+|---|---:|---:|---:|
+| **simdxml** | **519,590 ± 12,382** | **82,331 ± 1,026** | **10,570 ± 199** |
+| simdxml Direct/FFM | 448,189 ± 18,367 | 65,647 ± 262 | 7,795 ± 60 |
+| Jackson XML | 216,540 ± 2,262 | 47,009 ± 2,172 | 5,982 ± 153 |
+| JAXB RI | 116,922 ± 3,690 | 32,930 ± 1,105 | 4,807 ± 266 |
+
+The simdxml rows are from a second run taken after three profile-driven fixes; the Jackson and JAXB
+RI rows are from the first run of the same day, under the same external load. simdxml is
+**+140% / +75% / +77%** faster than Jackson XML and **+344% / +150% / +120%** faster than JAXB RI. Combined with the allocation table, simdxml delivers 1.6× Jackson's throughput while
+allocating 36% less on the 1,407-byte message.
+
+The Direct/FFM binder now beats Jackson at **every** size (+107% / +40% / +30%), which replaces the
+earlier reading that it won only on the smallest message. Its allocation is at or below the standard
+binder's everywhere.
+
+> **Isolation caveat for the 2026-08-27 run.** A Liberty server belonging to another session held
+> roughly 37% of one core out of four for the duration. The `gc.alloc.rate.norm` column is
+> deterministic (±0.001 B/op) and unaffected; the `ops/s` column should be read with that reserve.
+> Every configuration in the table ran under the same load, so the comparisons between rows hold —
+> but the absolute numbers are not a clean-machine result, and the Direct/FFM row's ±34,078 at 4
+> books shows where the noise landed.
+
+### Marshal, with output equivalence asserted
+
+`verifyEquivalence()` now covers `marshal` as well: whatever a backend writes is read back by an
+independent JAXB RI reader and compared to the source graph. The check paid for itself immediately —
+Jackson was writing the root as `<Catalog>` rather than `<catalog>`, because `XmlMapper` ignores
+`@XmlRootElement`. The model now carries `@JacksonXmlRootElement`, and the numbers below are the
+first marshal figures on this page that are known to describe equivalent documents.
+
+| implementation | 4 books | 32 books | 256 books |
+|---|---:|---:|---:|
+| **simdxml** | **783,771 ± 6,663** | **117,891 ± 1,885** | 12,385 ± 107 |
+| Jackson XML | 498,538 ± 5,612 | 102,089 ± 1,415 | **13,188 ± 160** |
+| JAXB RI | 320,477 ± 8,632 | 52,052 ± 634 | 6,421 ± 83 |
+
+| allocated B/op | 4 books | 32 books | 256 books |
+|---|---:|---:|---:|
+| **simdxml** | **1,504.009** | 6,128.059 | 76,312.566 |
+| Jackson XML | 1,872.014 | **5,104.068** | **43,072.171** |
+| JAXB RI | 5,080.022 | 26,560.134 | 202,033.090 |
+
+simdxml wins clearly on small messages (+57% at 4 books, +15% at 32) but **loses throughput at 256
+books (-6.1%) and allocates 77% more than Jackson** at that size. Errors are under 1.7% and the
+intervals are disjoint, so this is a result rather than noise: growing a single output array by
+doubling is the marshal path's remaining weakness on large documents.
+
+### Stage split: tokenization versus binding
+
+`BindingStageBenchmark` separates the reader from the binder on the same fixture. `bindPretokenized`
+replays events recorded once in `@Setup`, so it excludes tokenization entirely; those events carry
+Strings, which also excludes the raw-byte fast path, making it a floor for binding cost rather than a
+subtraction of `tokenize`.
+
+| stage | 4 books | 32 books | 256 books |
+|---|---:|---:|---:|
+| `tokenize` | 887,433 ± 8,221 | 158,308 ± 1,097 | 20,383 ± 351 |
+| `bindPretokenized` | 1,858,821 ± 20,804 | 256,719 ± 7,439 | 30,403 ± 277 |
+| `endToEnd` | 499,505 ± 5,638 | 77,450 ± 530 | 9,405 ± 135 |
+
+In time per operation at 32 books: 6,317 ns tokenizing, 3,895 ns binding, 12,912 ns end to end. The
+two stages account for 79% of the end-to-end cost and split it **62% tokenization / 38% binding**
+(60/40 at 256 books). The unaccounted 20% is interleaving: end to end the binder pulls one event at
+a time and does not receive the pre-materialized names `bindPretokenized` gets for free.
+
+### The 4,096-byte tiny-document threshold, on real message shapes
+
+`ThresholdBenchmark` runs the repository's production fixtures with the index off (the 4,096-byte
+default) and always on, in the same JVM against the same bytes:
+
+| fixture | bytes | default (4,096) | index always | difference |
+|---|---:|---:|---:|---:|
+| `soap/standard-soap11.xml` | 882 | **304,459 ± 3,214** | 233,380 ± 2,406 | **+30.5%** |
+| `healthcare/ihe-xcpd-soap12.xml` | 1,809 | **150,017 ± 1,393** | 123,099 ± 2,072 | **+21.9%** |
+| `payments/pain.001.001.09.xml` | 427 | **554,941 ± 7,510** | 418,519 ± 3,473 | **+32.6%** |
+
+None of the three shapes — attribute-heavy, namespace-heavy, deeply nested — repays the structural
+index below 4 KB. `SimdXmlParserBuilder.withTinyDocumentThreshold(int)` exists so this can be varied
+without one JVM per value.
+
+### Direct/FFM input memory
+
+`DirectMemoryBenchmark`, same document and binder, printing the resolved strategy each run:
+
+| | 4 books | 32 books | 256 books |
+|---|---:|---:|---:|
+| heap `MemorySegment` | 361,377 ± 19,771 | 49,330 ± 4,388 | 6,420 ± 124 |
+| native `MemorySegment` | **424,049 ± 27,246** | **62,480 ± 3,548** | 7,132 ± 411 |
+| `ByteBuffer.allocateDirect` | 416,004 ± 30,245 | 59,041 ± 4,489 | **7,457 ± 558** |
+
+A heap segment is 15-21% slower at the small sizes because it cannot use the Unsafe address path. A
+direct `ByteBuffer` wrapped by `MemorySegment.ofBuffer` is indistinguishable from a native segment.
+
+Configuration note: repeating the run with every optional backend forced on
+(`-Dorg.simdxml.tiny.threshold=0 -Dorg.simdxml.indexer=vector -Dorg.simdxml.direct.strategy=vector`)
+did not improve simdxml on this fixture. Building the structural index for a 1,407-byte message
+does not pay for itself, which is what the 4,096-byte `tiny` threshold already assumes: stage-1
+SIMD earns its place on large documents (the MiB/s rows above), not on small JAXB messages.
 
 `ComplexBindingBenchmark` uses a 2,779-byte graph with 16 nested objects, object arrays, primitive
 `int[]`, `List<String>`, `Set<Long>`, property-based getter/setter access and map-style key/value

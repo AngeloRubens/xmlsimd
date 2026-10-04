@@ -10,6 +10,7 @@ public final class SimdMarshaller {
     private final java.util.Map<Class<?>, XmlBindingAdapter> adapters = new java.util.HashMap<Class<?>, XmlBindingAdapter>();
     private final Utf8XmlWriter writer = new Utf8XmlWriter();
     private boolean xmlDeclaration = true;
+    private XmlAttachmentHandler attachments;
 
     SimdMarshaller(java.util.Set<Class<?>> boundTypes) {
         this.boundTypes = boundTypes;
@@ -19,6 +20,7 @@ public final class SimdMarshaller {
 
     /** Controls whether the XML declaration is emitted; JAXB fragment mode disables it. */
     public SimdMarshaller withXmlDeclaration(boolean enabled) { xmlDeclaration = enabled; return this; }
+    public SimdMarshaller withAttachmentHandler(XmlAttachmentHandler handler) { attachments = handler; return this; }
 
     /** Registers an already constructed adapter; registration is outside the marshal loop. */
     public SimdMarshaller withAdapter(Class<?> adapterType, XmlBindingAdapter adapter) {
@@ -155,8 +157,24 @@ public final class SimdMarshaller {
     private void writeStaxProperty(XmlBindingMetadata.Property property,Object value,String inherited,
             javax.xml.stream.XMLStreamWriter output)throws javax.xml.stream.XMLStreamException{
         Object adapted=marshalAdapted(property,value);
+        if (writeStaxAttachment(property, adapted, inherited, output)) return;
+        adapted = inlineBinary(property, adapted);
         if(property.hexBinary()){writeStaxStart(output,property.expandedName(),inherited);output.writeCharacters(property.lexical(adapted));output.writeEndElement();}
         else writeStaxObject(adapted,property.expandedName(),inherited,output,property.xmlType());
+    }
+    private boolean writeStaxAttachment(XmlBindingMetadata.Property property,Object value,String inherited,javax.xml.stream.XMLStreamWriter output)throws javax.xml.stream.XMLStreamException {
+        if (attachments == null || value == null || !property.binary() || property.inlineBinary()) return false;
+        if (property.attachmentRef()) {
+            String uri=attachments.addSwaRefAttachment(value); if (uri == null) return false;
+            writeStaxStart(output,property.expandedName(),inherited); output.writeCharacters(uri); output.writeEndElement(); return true;
+        }
+        if (!attachments.isXopPackage()) return false;
+        String cid=attachmentContentId(property,value); if (cid == null) return false;
+        writeStaxStart(output,property.expandedName(),inherited);
+        output.writeStartElement("xop","Include",XOP_NAMESPACE); output.writeNamespace("xop",XOP_NAMESPACE);
+        // href is unqualified on xop:Include, per the XOP recommendation.
+        output.writeAttribute("href",href(cid));
+        output.writeEndElement(); output.writeEndElement(); return true;
     }
 
     private static String writeStaxStart(javax.xml.stream.XMLStreamWriter output, XmlExpandedName name,
@@ -265,8 +283,58 @@ public final class SimdMarshaller {
     }
     private void writeProperty(XmlBindingMetadata.Property property,Object value,String inherited)throws IOException{
         Object adapted=marshalAdapted(property,value);
+        if (writeAttachment(property, adapted, inherited)) return;
+        adapted = inlineBinary(property, adapted);
         if(property.hexBinary()){writer.ascii('<');writer.raw(property.xmlName());String active=declareDefaultNamespace(property.expandedName().namespace(),inherited);writer.ascii('>');writer.text(property.lexical(adapted));close(property.xmlName());}
         else writeObject(adapted,property.expandedName(),inherited,property.xmlType());
+    }
+    private boolean writeAttachment(XmlBindingMetadata.Property property,Object value,String inherited)throws IOException {
+        // Gated on flags precomputed per class: no annotation lookup happens in the marshal loop.
+        if (attachments == null || value == null || !property.binary() || property.inlineBinary()) return false;
+        if (property.attachmentRef()) {
+            String uri=attachments.addSwaRefAttachment(value); if (uri == null) return false;
+            writer.ascii('<'); writer.raw(property.xmlName()); declareDefaultNamespace(property.expandedName().namespace(),inherited);
+            writer.ascii('>'); writer.text(uri); close(property.xmlName()); return true;
+        }
+        if (!attachments.isXopPackage()) return false;
+        String cid=attachmentContentId(property,value); if (cid == null) return false;
+        writer.ascii('<'); writer.raw(property.xmlName()); declareDefaultNamespace(property.expandedName().namespace(),inherited); writer.raw(" xmlns:xop=\""+XOP_NAMESPACE+"\"><xop:Include href=\""); writer.attribute(href(cid)); writer.raw("\"></xop:Include>"); close(property.xmlName()); return true;
+    }
+
+    /** Shared by the byte and StAX writers: one attachment registration, no intermediate copy. */
+    private String attachmentContentId(XmlBindingMetadata.Property property,Object value) {
+        String namespace=property.expandedName().namespace(), local=property.xmlName();
+        if (value instanceof byte[]) {
+            byte[] data=(byte[]) value;
+            return attachments.addMtomAttachment(data,0,data.length,mimeType(property,value),namespace,local);
+        }
+        String cid=attachments.addMtomAttachment(value,namespace,local);
+        if (cid != null) return cid;
+        byte[] data=attachments.toBytes(value); if (data == null) return null;
+        return attachments.addMtomAttachment(data,0,data.length,mimeType(property,value),namespace,local);
+    }
+
+    /** {@code @XmlMimeType} wins over whatever the value itself reports. */
+    private String mimeType(XmlBindingMetadata.Property property,Object value) {
+        String declared=property.mimeType();
+        return declared != null ? declared : attachments.contentType(value);
+    }
+
+    /**
+     * Base64 fallback for a binary property that did not become an attachment. {@code byte[]} is
+     * already handled by the lexical mapping; a {@code DataHandler} has to be read through the
+     * bridge, since the core cannot see the Activation API.
+     */
+    private Object inlineBinary(XmlBindingMetadata.Property property, Object value) {
+        if (!property.binary() || value == null || value instanceof byte[] || attachments == null) return value;
+        byte[] data = attachments.toBytes(value);
+        return data == null ? value : data;
+    }
+
+    private static final String XOP_NAMESPACE = "http://www.w3.org/2004/08/xop/include";
+
+    private static String href(String contentId) {
+        return contentId.startsWith("cid:") ? contentId : "cid:" + contentId;
     }
     private void writeTypeAttribute(Class<?> actual,Class<?> declared)throws IOException{
         if(declared==null||declared==actual||!declared.isAssignableFrom(actual))return;

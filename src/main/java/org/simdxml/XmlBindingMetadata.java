@@ -22,6 +22,9 @@ final class XmlBindingMetadata {
     private static final ClassValue<List<Property>> PROPERTIES = new ClassValue<List<Property>>() {
         @Override protected List<Property> computeValue(Class<?> type) { return inspectProperties(type); }
     };
+    private static final ClassValue<BindingPlan> PLANS = new ClassValue<BindingPlan>() {
+        @Override protected BindingPlan computeValue(Class<?> type) { return new BindingPlan(type); }
+    };
     private static final ClassValue<Map<XmlExpandedName, Property>> CHILDREN = new ClassValue<Map<XmlExpandedName, Property>>() {
         @Override protected Map<XmlExpandedName, Property> computeValue(Class<?> type) {
             Map<XmlExpandedName, Property> result = new HashMap<XmlExpandedName, Property>();
@@ -107,6 +110,7 @@ final class XmlBindingMetadata {
     };
 
     static List<Property> properties(Class<?> type) { return PROPERTIES.get(type); }
+    static BindingPlan plan(Class<?> type) { return PLANS.get(type); }
     static Map<XmlExpandedName, Property> children(Class<?> type) { return CHILDREN.get(type); }
     static Map<String, Property> localChildren(Class<?> type) { return LOCAL_CHILDREN.get(type); }
     static Map<XmlExpandedName, Property> wrappers(Class<?> type) { return WRAPPERS.get(type); }
@@ -264,7 +268,8 @@ final class XmlBindingMetadata {
                 || javax.xml.datatype.XMLGregorianCalendar.class.isAssignableFrom(type)
                 || javax.xml.datatype.Duration.class.isAssignableFrom(type)
                 || java.util.Date.class.isAssignableFrom(type) || java.util.Calendar.class.isAssignableFrom(type)
-                || type == javax.xml.namespace.QName.class || type.getName().startsWith("java.time.");
+                || type == javax.xml.namespace.QName.class || type.getName().startsWith("java.time.")
+                || type.getName().equals("jakarta.activation.DataHandler") || type.getName().equals("javax.activation.DataHandler");
     }
 
     private static javax.xml.datatype.DatatypeFactory[] datatypeFactories(int count) {
@@ -283,6 +288,200 @@ final class XmlBindingMetadata {
         if ("-INF".equals(value)) return Double.NEGATIVE_INFINITY;
         if ("NaN".equals(value)) return Double.NaN;
         return Double.parseDouble(value);
+    }
+
+    private static boolean asciiSpace(byte value) {
+        return value == ' ' || value == '\t' || value == '\n' || value == '\r';
+    }
+
+    static float parseFloat(XmlRawValue raw) {
+        int n = (int) raw.length();
+        int start = 0, end = n;
+        while (start < end && asciiSpace(raw.byteAt(start))) start++;
+        while (end > start && asciiSpace(raw.byteAt(end - 1))) end--;
+        if (start >= end) return 0.0f;
+
+        boolean negative = false;
+        int integerPart = 0;
+        int fractionalPart = 0;
+        int fractionalDigits = 0;
+        int exponent = 0;
+        boolean hasExponent = false;
+        boolean exponentNegative = false;
+        int state = 0; // 0=integer, 1=fraction, 2=exponent
+        int i = start;
+
+        // Handle sign
+        if (raw.byteAt(i) == '-') { negative = true; i++; }
+        else if (raw.byteAt(i) == '+') { i++; }
+
+        // Parse integer part
+        while (i < end && raw.byteAt(i) >= '0' && raw.byteAt(i) <= '9') {
+            integerPart = integerPart * 10 + (raw.byteAt(i) - '0');
+            i++;
+        }
+
+        // Parse fractional part
+        if (i < end && raw.byteAt(i) == '.') {
+            i++; // skip '.'
+            state = 1;
+            while (i < end && raw.byteAt(i) >= '0' && raw.byteAt(i) <= '9') {
+                if (fractionalDigits < 9) { // limit to prevent overflow
+                    fractionalPart = fractionalPart * 10 + (raw.byteAt(i) - '0');
+                    fractionalDigits++;
+                }
+                i++;
+            }
+        }
+
+        // Parse exponent
+        if (i < end && (raw.byteAt(i) == 'e' || raw.byteAt(i) == 'E')) {
+            i++; // skip 'e' or 'E'
+            state = 2;
+            hasExponent = true;
+            if (i < end && raw.byteAt(i) == '-') { exponentNegative = true; i++; }
+            else if (i < end && raw.byteAt(i) == '+') { i++; }
+
+            while (i < end && raw.byteAt(i) >= '0' && raw.byteAt(i) <= '9') {
+                exponent = exponent * 10 + (raw.byteAt(i) - '0');
+                i++;
+            }
+        }
+
+        // Apply exponent to fractional part
+        if (hasExponent) {
+            if (exponentNegative) exponent = -exponent;
+            fractionalDigits -= exponent;
+        }
+
+        // Normalize fractional part
+        float value = integerPart;
+        if (fractionalDigits > 0) {
+            float fraction = fractionalPart;
+            for (int j = 0; j < fractionalDigits; j++) {
+                fraction /= 10.0f;
+            }
+            value += fraction;
+        } else if (fractionalDigits < 0) {
+            // Handle case where exponent shifted decimal point left of integer part
+            for (int j = 0; j < -fractionalDigits; j++) {
+                value /= 10.0f;
+            }
+        }
+
+        // Apply exponent
+        if (hasExponent) {
+            for (int j = 0; j < Math.abs(exponent); j++) {
+                if (exponent > 0) value *= 10.0f;
+                else value /= 10.0f;
+            }
+        }
+
+        return negative ? -value : value;
+    }
+
+    static double parseDouble(XmlRawValue raw) {
+        int n = (int) raw.length();
+        int start = 0, end = n;
+        while (start < end && asciiSpace(raw.byteAt(start))) start++;
+        while (end > start && asciiSpace(raw.byteAt(end - 1))) end--;
+        if (start >= end) return 0.0;
+
+        boolean negative = false;
+        long integerPart = 0;
+        long fractionalPart = 0;
+        int fractionalDigits = 0;
+        int exponent = 0;
+        boolean hasExponent = false;
+        boolean exponentNegative = false;
+        int state = 0; // 0=integer, 1=fraction, 2=exponent
+        int i = start;
+
+        // Handle sign
+        if (raw.byteAt(i) == '-') { negative = true; i++; }
+        else if (raw.byteAt(i) == '+') { i++; }
+
+        // Parse integer part
+        while (i < end && raw.byteAt(i) >= '0' && raw.byteAt(i) <= '9') {
+            // Check for overflow
+            if (integerPart > (Long.MAX_VALUE - (raw.byteAt(i) - '0')) / 10) {
+                // Fall back to Double.parseDouble for overflow cases
+                String trimmed = raw.decodeUtf8(start, end - start).trim();
+                if ("INF".equals(trimmed)) return Double.POSITIVE_INFINITY;
+                if ("-INF".equals(trimmed)) return Double.NEGATIVE_INFINITY;
+                if ("NaN".equals(trimmed)) return Double.NaN;
+                return Double.parseDouble(trimmed);
+            }
+            integerPart = integerPart * 10 + (raw.byteAt(i) - '0');
+            i++;
+        }
+
+        // Parse fractional part
+        if (i < end && raw.byteAt(i) == '.') {
+            i++; // skip '.'
+            state = 1;
+            while (i < end && raw.byteAt(i) >= '0' && raw.byteAt(i) <= '9') {
+                if (fractionalDigits < 18) { // limit to prevent overflow
+                    fractionalPart = fractionalPart * 10 + (raw.byteAt(i) - '0');
+                    fractionalDigits++;
+                }
+                i++;
+            }
+        }
+
+        // Parse exponent
+        if (i < end && (raw.byteAt(i) == 'e' || raw.byteAt(i) == 'E')) {
+            i++; // skip 'e' or 'E'
+            state = 2;
+            hasExponent = true;
+            if (i < end && raw.byteAt(i) == '-') { exponentNegative = true; i++; }
+            else if (i < end && raw.byteAt(i) == '+') { i++; }
+
+            while (i < end && raw.byteAt(i) >= '0' && raw.byteAt(i) <= '9') {
+                // Check for overflow
+                if (exponent > Integer.MAX_VALUE / 10 - (raw.byteAt(i) - '0')) {
+                    // Fall back to Double.parseDouble for overflow cases
+                    String trimmed = raw.decodeUtf8(start, end - start).trim();
+                    if ("INF".equals(trimmed)) return Double.POSITIVE_INFINITY;
+                    if ("-INF".equals(trimmed)) return Double.NEGATIVE_INFINITY;
+                    if ("NaN".equals(trimmed)) return Double.NaN;
+                    return Double.parseDouble(trimmed);
+                }
+                exponent = exponent * 10 + (raw.byteAt(i) - '0');
+                i++;
+            }
+        }
+
+        // Apply exponent to fractional part
+        if (hasExponent) {
+            if (exponentNegative) exponent = -exponent;
+            fractionalDigits -= exponent;
+        }
+
+        // Normalize fractional part
+        double value = integerPart;
+        if (fractionalDigits > 0) {
+            double fraction = fractionalPart;
+            for (int j = 0; j < fractionalDigits; j++) {
+                fraction /= 10.0;
+            }
+            value += fraction;
+        } else if (fractionalDigits < 0) {
+            // Handle case where exponent shifted decimal point left of integer part
+            for (int j = 0; j < -fractionalDigits; j++) {
+                value /= 10.0;
+            }
+        }
+
+        // Apply exponent
+        if (hasExponent) {
+            for (int j = 0; j < Math.abs(exponent); j++) {
+                if (exponent > 0) value *= 10.0;
+                else value /= 10.0;
+            }
+        }
+
+        return negative ? -value : value;
     }
 
     private static List<Property> inspectProperties(Class<?> type) {
@@ -311,7 +510,7 @@ final class XmlBindingMetadata {
                         hasAnnotation(field, JAKARTA + "XmlValue", JAVAX + "XmlValue"), fieldAccess(field),
                         adapterType(field), "hexBinary".equals(annotationString(field,JAKARTA+"XmlSchemaType",JAVAX+"XmlSchemaType","name")),wrapperName(field,field.getName()),
                         annotationString(field,JAKARTA+"XmlElement",JAVAX+"XmlElement","defaultValue"),
-                        annotationBoolean(field,JAKARTA+"XmlElement",JAVAX+"XmlElement","nillable")));
+                        annotationBoolean(field,JAKARTA+"XmlElement",JAVAX+"XmlElement","nillable"), field, declaring));
                 included.add(field.getName());
             }
         }
@@ -335,7 +534,8 @@ final class XmlBindingMetadata {
                     new ReflectionMethodAccess(getter, setter), adapterType(annotations),
                     "hexBinary".equals(annotationString(annotations,JAKARTA+"XmlSchemaType",JAVAX+"XmlSchemaType","name")),wrapperName(annotations,entry.getKey()),
                     annotationString(annotations,JAKARTA+"XmlElement",JAVAX+"XmlElement","defaultValue"),
-                    annotationBoolean(annotations,JAKARTA+"XmlElement",JAVAX+"XmlElement","nillable")));
+                    annotationBoolean(annotations,JAKARTA+"XmlElement",JAVAX+"XmlElement","nillable"),
+                    annotations, getter.getDeclaringClass()));
         }
         return java.util.Collections.unmodifiableList(result);
     }
@@ -343,7 +543,7 @@ final class XmlBindingMetadata {
     private static Property property(int index, String javaName, Class<?> rawType, Type genericType,
             String attributeName, String elementName, String attributeNamespace, String elementNamespace,
             boolean value, FieldAccess access, Class<?> adapterType, boolean hexBinary, XmlExpandedName wrapperName,
-            String defaultValue, boolean nillable) {
+            String defaultValue, boolean nillable, AnnotatedElement annotations, Class<?> declaring) {
         String annotated = attributeName != null ? attributeName : elementName != null ? elementName : DEFAULT;
         String xmlName = DEFAULT.equals(annotated) ? javaName : annotated;
         String namespace = attributeName != null ? attributeNamespace : elementName != null ? elementNamespace : DEFAULT;
@@ -354,7 +554,24 @@ final class XmlBindingMetadata {
         Class<?> xmlType = adapterType == null ? itemType : adapterValueType(adapterType);
         return new Property(index, new XmlExpandedName(namespace, xmlName), wrapperName, rawType, itemType, xmlType, adapterType,
                 multiple, multiple && (rawType.isArray() || !rawType.isAssignableFrom(ArrayList.class)),
-                attributeName != null, value, hexBinary, normalizedDefault(defaultValue), nillable, access);
+                attributeName != null, value, hexBinary, normalizedDefault(defaultValue), nillable, access,
+                annotationString(annotations, JAKARTA + "XmlMimeType", JAVAX + "XmlMimeType", "value"),
+                hasAnnotation(annotations, JAKARTA + "XmlInlineBinaryData", JAVAX + "XmlInlineBinaryData")
+                        || declaring != null && hasAnnotation(declaring, JAKARTA + "XmlInlineBinaryData", JAVAX + "XmlInlineBinaryData"),
+                hasAnnotation(annotations, JAKARTA + "XmlAttachmentRef", JAVAX + "XmlAttachmentRef"));
+    }
+
+    /**
+     * MTOM-capable value types, recognised by name so that the core never links against
+     * {@code jakarta.activation} or {@code javax.activation}.
+     */
+    private static boolean binaryType(Class<?> type) {
+        if (type == byte[].class) return true;
+        for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
+            String name = current.getName();
+            if (name.equals("jakarta.activation.DataHandler") || name.equals("javax.activation.DataHandler")) return true;
+        }
+        return false;
     }
 
     private static String normalizedDefault(String value) {
@@ -506,20 +723,33 @@ final class XmlBindingMetadata {
 
     static final class Property {
         private final int index; private final XmlExpandedName xmlName, wrapperName;
+        private final int xmlNameHash;
+        private final byte[] xmlNameBytes;
         private final Class<?> rawType, itemType, xmlType, adapterType;
         private final boolean list, materialize, attribute, value, hexBinary, nillable;
+        private final boolean binary, inlineBinary, attachmentRef;
+        private final String mimeType;
         private final String defaultValue; private final FieldAccess fieldAccess;
         Property(int index, XmlExpandedName xmlName, XmlExpandedName wrapperName, Class<?> rawType, Class<?> itemType,
                 Class<?> xmlType, Class<?> adapterType, boolean list,
                 boolean materialize, boolean attribute, boolean value, boolean hexBinary,
-                String defaultValue, boolean nillable, FieldAccess fieldAccess) {
+                String defaultValue, boolean nillable, FieldAccess fieldAccess,
+                String mimeType, boolean inlineBinary, boolean attachmentRef) {
             this.index = index; this.xmlName = xmlName; this.wrapperName=wrapperName; this.rawType = rawType; this.itemType = itemType;
+            this.xmlNameHash = fnv1a(xmlName.localName());
+            this.xmlNameBytes = asciiBytes(xmlName.localName());
             this.xmlType = xmlType; this.adapterType = adapterType;
             this.list = list; this.materialize = materialize; this.attribute = attribute; this.value = value; this.hexBinary=hexBinary;
             this.defaultValue=defaultValue; this.nillable=nillable;
             this.fieldAccess = fieldAccess;
+            // Resolved once per class, never in the marshal/unmarshal loop.
+            this.mimeType = mimeType; this.inlineBinary = inlineBinary; this.attachmentRef = attachmentRef;
+            this.binary = !hexBinary && binaryType(xmlType);
         }
         int index() { return index; } String xmlName() { return xmlName.localName(); }
+        byte[] xmlNameBytes() { return xmlNameBytes; }
+        int xmlNameHash() { return xmlNameHash; }
+        int xmlNameLength() { return xmlName.localName().length(); }
         XmlExpandedName expandedName() { return xmlName; } Class<?> rawType() { return rawType; }
         XmlExpandedName wrapperName(){return wrapperName;}
         Class<?> itemType() { return itemType; } boolean list() { return list; }
@@ -528,12 +758,227 @@ final class XmlBindingMetadata {
         boolean attribute() { return attribute; } boolean value() { return value; }
         boolean hexBinary() { return hexBinary; }
         boolean nillable() { return nillable; }
+        /** True when the value can travel as an MTOM/XOP or swaRef attachment: {@code byte[]} or a {@code DataHandler}. */
+        boolean binary() { return binary; }
+        /** {@code @XmlMimeType} value, or null. */
+        String mimeType() { return mimeType; }
+        /** {@code @XmlInlineBinaryData}: never optimize this property into an attachment. */
+        boolean inlineBinary() { return inlineBinary; }
+        /** {@code @XmlAttachmentRef}: bind through swaRef rather than XOP. */
+        boolean attachmentRef() { return attachmentRef; }
         String defaultValue() { return defaultValue; }
+        java.lang.reflect.Field directField() { return fieldAccess.directField(); }
         Object convert(String text) {
             if (!hexBinary) return XmlBindingMetadata.convert(text, xmlType);
             String value=text.trim(); if((value.length()&1)!=0)throw new XmlBindingException("Odd-length hexBinary");
             byte[] bytes=new byte[value.length()/2];for(int i=0;i<bytes.length;i++){int hi=Character.digit(value.charAt(i*2),16),lo=Character.digit(value.charAt(i*2+1),16);if(hi<0||lo<0)throw new XmlBindingException("Invalid hexBinary");bytes[i]=(byte)((hi<<4)|lo);}return bytes;
         }
+        Object convert(XmlByteSlice raw) {
+            if (hexBinary || xmlType == String.class || xmlType == Character.class || xmlType == char.class)
+                return convert(raw.decodeUtf8());
+            int n = raw.length();
+            if (xmlType == int.class || xmlType == Integer.class) return Integer.valueOf(decimalInt(raw, n));
+            if (xmlType == long.class || xmlType == Long.class) return Long.valueOf(decimalLong(raw, n));
+            if (xmlType == short.class || xmlType == Short.class) return Short.valueOf((short) decimalInt(raw, n));
+            if (xmlType == byte.class || xmlType == Byte.class) return Byte.valueOf((byte) decimalInt(raw, n));
+            if (xmlType == boolean.class || xmlType == Boolean.class) return Boolean.valueOf(xmlBoolean(raw));
+            if (xmlType == double.class || xmlType == Double.class) {
+                double parsed = decimalDouble(raw, n);
+                if (parsed == parsed) return Double.valueOf(parsed);
+            } else if (xmlType == float.class || xmlType == Float.class) {
+                double parsed = decimalDouble(raw, n);
+                if (parsed == parsed) return Float.valueOf((float) parsed);
+            }
+            return convert(raw.decodeUtf8());
+        }
+        Object convert(XmlRawValue raw) {
+            if (hexBinary || xmlType == String.class || xmlType == Character.class || xmlType == char.class)
+                return convert(raw.decodeXmlText());
+            int n = (int) raw.length();
+            if (xmlType == int.class || xmlType == Integer.class) return Integer.valueOf(decimalInt(raw, n));
+            if (xmlType == long.class || xmlType == Long.class) return Long.valueOf(decimalLong(raw, n));
+            if (xmlType == short.class || xmlType == Short.class) return Short.valueOf((short) decimalInt(raw, n));
+            if (xmlType == byte.class || xmlType == Byte.class) return Byte.valueOf((byte) decimalInt(raw, n));
+            if (xmlType == boolean.class || xmlType == Boolean.class) return Boolean.valueOf(xmlBoolean(raw, n));
+            if (xmlType == double.class || xmlType == Double.class) {
+                double parsed = decimalDouble(raw, n);
+                if (parsed == parsed) return Double.valueOf(parsed);
+            } else if (xmlType == float.class || xmlType == Float.class) {
+                double parsed = decimalDouble(raw, n);
+                if (parsed == parsed) return Float.valueOf((float) parsed);
+            }
+            return convert(raw.decodeXmlText());
+        }
+
+        /**
+         * Byte-level {@code xs:boolean}. The earlier fast path answered {@code false} for every
+         * lexical form that was not {@code true} or {@code 1}, so {@code <b>yes</b>} bound silently
+         * instead of being rejected the way the String path rejects it.
+         */
+        private static boolean xmlBoolean(XmlByteSlice raw) {
+            if (raw.equalsAscii(TRUE) || raw.equalsAscii(ONE)) return true;
+            if (raw.equalsAscii(FALSE) || raw.equalsAscii(ZERO)) return false;
+            throw new XmlBindingException("Invalid XML boolean: " + raw.decodeUtf8());
+        }
+
+        /** Byte-level {@code xs:boolean}; the String form allocated one object per element. */
+        private static boolean xmlBoolean(XmlRawValue raw, int n) {
+            int start = 0, end = n;
+            while (start < end && asciiSpace(raw.byteAt(start))) start++;
+            while (end > start && asciiSpace(raw.byteAt(end - 1))) end--;
+            if (matchesAscii(raw, start, end, TRUE) || matchesAscii(raw, start, end, ONE)) return true;
+            if (matchesAscii(raw, start, end, FALSE) || matchesAscii(raw, start, end, ZERO)) return false;
+            throw new XmlBindingException("Invalid XML boolean: " + raw.decodeUtf8().trim());
+        }
+
+        private static boolean matchesAscii(XmlRawValue raw, int start, int end, byte[] token) {
+            if (end - start != token.length) return false;
+            for (int i = 0; i < token.length; i++) if (raw.byteAt(start + i) != token[i]) return false;
+            return true;
+        }
+        private static final byte[] TRUE = new byte[]{'t','r','u','e'}, ONE = new byte[]{'1'};
+        private static final byte[] FALSE = new byte[]{'f','a','l','s','e'}, ZERO = new byte[]{'0'};
+        /** 10^0 … 10^22 are the powers exactly representable as a double. */
+        private static final double[] POW10 = {
+            1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
+            1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22};
+        private static final int MAX_POW10 = 22;
+        /** Significands up to 2^53 are exact in a double. */
+        private static final long MAX_EXACT_MANTISSA = 1L << 53;
+        /** Long.MAX_VALUE has 19 digits, so 18 digits always fit without an overflow check per digit. */
+        private static final int SAFE_DIGITS = 18;
+        /**
+         * Up to {@link #SAFE_DIGITS} decimal digits cannot overflow a {@code long}, so the digit loop
+         * is a plain multiply-add and the range is checked once at the end. Longer input — which in
+         * practice only means leading zeros — falls back to the JDK parser.
+         */
+        private static int decimalInt(XmlByteSlice raw, int n) {
+            if (n == 0) return 0; int i = 0; boolean negative = raw.byteAt(0) == '-'; if (negative) i++;
+            if (n - i > SAFE_DIGITS) return Integer.parseInt(raw.decodeUtf8().trim());
+            long value = 0;
+            for (; i < n; i++) {
+                byte b = raw.byteAt(i);
+                if (b < '0' || b > '9') throw new NumberFormatException(raw.decodeUtf8());
+                value = value * 10 + (b - '0');
+            }
+            return toInt(negative ? -value : value, raw);
+        }
+        private static long decimalLong(XmlByteSlice raw, int n) {
+            if (n == 0) return 0L; int i = 0; boolean negative = raw.byteAt(0) == '-'; if (negative) i++;
+            if (n - i > SAFE_DIGITS) return Long.parseLong(raw.decodeUtf8().trim());
+            long value = 0;
+            for (; i < n; i++) {
+                byte b = raw.byteAt(i);
+                if (b < '0' || b > '9') throw new NumberFormatException(raw.decodeUtf8());
+                value = value * 10 + (b - '0');
+            }
+            return negative ? -value : value;
+        }
+        /**
+         * Decimal floating point straight from the bytes, with no intermediate String.
+         *
+         * <p>Only the form that can be proved correct is taken: at most 18 significant digits (so
+         * the significand accumulates in a long without overflow), a significand no larger than
+         * {@code 2^53} and a decimal exponent within ±22, which are exactly the conditions under
+         * which one multiplication or division by an exact power of ten is the correctly rounded
+         * result. Exponent notation, {@code INF}, {@code NaN} and anything longer fall back to the
+         * JDK parser, signalled by returning {@code NaN} — a value this grammar can never produce.
+         *
+         * <p>Float uses the same result cast down, which is what the String path already does.
+         */
+        private static double decimalDouble(XmlRawValue raw, int n) {
+            int start = 0, end = n;
+            while (start < end && asciiSpace(raw.byteAt(start))) start++;
+            while (end > start && asciiSpace(raw.byteAt(end - 1))) end--;
+            if (start == end) return Double.NaN;
+            int i = start;
+            boolean negative = false;
+            byte sign = raw.byteAt(i);
+            if (sign == '-' || sign == '+') { negative = sign == '-'; i++; }
+            long mantissa = 0;
+            int digits = 0, exponent = 0;
+            boolean anyDigit = false, seenDot = false;
+            for (; i < end; i++) {
+                byte b = raw.byteAt(i);
+                if (b >= '0' && b <= '9') {
+                    if (++digits > SAFE_DIGITS) return Double.NaN;
+                    mantissa = mantissa * 10 + (b - '0');
+                    if (seenDot) exponent--;
+                    anyDigit = true;
+                    continue;
+                }
+                if (b == '.' && !seenDot) { seenDot = true; continue; }
+                return Double.NaN;
+            }
+            if (!anyDigit || mantissa > MAX_EXACT_MANTISSA || exponent < -MAX_POW10) return Double.NaN;
+            double value = exponent < 0 ? mantissa / POW10[-exponent] : mantissa;
+            return negative ? -value : value;
+        }
+
+        private static double decimalDouble(XmlByteSlice raw, int n) {
+            int start = 0, end = n;
+            while (start < end && asciiSpace(raw.byteAt(start))) start++;
+            while (end > start && asciiSpace(raw.byteAt(end - 1))) end--;
+            if (start == end) return Double.NaN;
+            int i = start;
+            boolean negative = false;
+            byte sign = raw.byteAt(i);
+            if (sign == '-' || sign == '+') { negative = sign == '-'; i++; }
+            long mantissa = 0;
+            int digits = 0, exponent = 0;
+            boolean anyDigit = false, seenDot = false;
+            for (; i < end; i++) {
+                byte b = raw.byteAt(i);
+                if (b >= '0' && b <= '9') {
+                    if (++digits > SAFE_DIGITS) return Double.NaN;
+                    mantissa = mantissa * 10 + (b - '0');
+                    if (seenDot) exponent--;
+                    anyDigit = true;
+                    continue;
+                }
+                if (b == '.' && !seenDot) { seenDot = true; continue; }
+                return Double.NaN;
+            }
+            if (!anyDigit || mantissa > MAX_EXACT_MANTISSA || exponent < -MAX_POW10) return Double.NaN;
+            double value = exponent < 0 ? mantissa / POW10[-exponent] : mantissa;
+            return negative ? -value : value;
+        }
+
+        private static int toInt(long value, XmlByteSlice raw) {
+            if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) throw new NumberFormatException(raw.decodeUtf8());
+            return (int) value;
+        }
+        private static int toInt(long value, XmlRawValue raw) {
+            if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) throw new NumberFormatException(raw.decodeUtf8());
+            return (int) value;
+        }
+        private static int decimalInt(XmlRawValue raw, int n) {
+            int start = 0, end = n;
+            while (start < end && asciiSpace(raw.byteAt(start))) start++;
+            while (end > start && asciiSpace(raw.byteAt(end - 1))) end--;
+            if (start == end) return 0;
+            int i = start; boolean negative = raw.byteAt(i) == '-'; if (negative) i++;
+            if (end - i > SAFE_DIGITS) return Integer.parseInt(raw.decodeUtf8().trim());
+            long value = 0;
+            for (; i < end; i++) {
+                byte b = raw.byteAt(i);
+                if (b < '0' || b > '9') throw new NumberFormatException(raw.decodeUtf8());
+                value = value * 10 + (b - '0');
+            }
+            return toInt(negative ? -value : value, raw);
+        }
+        private static long decimalLong(XmlRawValue raw, int n) {
+            int start = 0, end = n;
+            while (start < end && asciiSpace(raw.byteAt(start))) start++;
+            while (end > start && asciiSpace(raw.byteAt(end - 1))) end--;
+            if (start == end) return 0L;
+            int i = start; boolean negative = raw.byteAt(i) == '-'; if (negative) i++;
+            if (end - i > SAFE_DIGITS) return Long.parseLong(raw.decodeUtf8().trim());
+            long value = 0L;
+            for (; i < end; i++) { byte b = raw.byteAt(i); if (b < '0' || b > '9') throw new NumberFormatException(raw.decodeUtf8()); value = value * 10 + (b - '0'); }
+            return negative ? -value : value;
+        }
+        private static boolean asciiSpace(byte value) { return value == ' ' || value == '\t' || value == '\n' || value == '\r'; }
         String lexical(Object value) {
             if (!hexBinary) return XmlBindingMetadata.lexical(value);
             byte[] bytes=(byte[])value; char[] out=new char[bytes.length*2]; final char[] hex="0123456789ABCDEF".toCharArray();for(int i=0;i<bytes.length;i++){int b=bytes[i]&255;out[i*2]=hex[b>>>4];out[i*2+1]=hex[b&15];}return new String(out);
@@ -550,6 +995,8 @@ final class XmlBindingMetadata {
                 throw new XmlBindingException("Cannot read property " + xmlName, e);
             }
         }
+        private static int fnv1a(String value) { int hash=0x811c9dc5; for(int i=0;i<value.length();i++){char c=value.charAt(i);if(c>0x7f)return -1;hash=(hash ^ c)*0x01000193;} return hash; }
+        private static byte[] asciiBytes(String value) { for (int i=0;i<value.length();i++) if (value.charAt(i)>0x7f) return null; return value.getBytes(java.nio.charset.StandardCharsets.US_ASCII); }
     }
 
     private enum AccessMode { AUTO, VARHANDLE, REFLECTION }

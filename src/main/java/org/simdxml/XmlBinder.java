@@ -6,9 +6,16 @@ import java.util.Map;
 
 /** Executes a precompiled JAXB-style binding plan against the streaming reader. */
 final class XmlBinder {
+    private static final String XSI_NAMESPACE = "http://www.w3.org/2001/XMLSchema-instance";
+    private static final XmlExpandedName XSI_NIL = new XmlExpandedName(XSI_NAMESPACE, "nil");
+    private static final XmlExpandedName XSI_TYPE = new XmlExpandedName(XSI_NAMESPACE, "type");
+    /** Scalar text peeked ahead of the reader's own flyweight; request-local, like the binder. */
+    private final XmlByteSlice pendingText = new XmlByteSlice();
     private final Map<Class<?>, XmlBindingAdapter> adapters;
+    private XmlAttachmentHandler attachments;
     XmlBinder() { this(java.util.Collections.<Class<?>, XmlBindingAdapter>emptyMap()); }
     XmlBinder(Map<Class<?>, XmlBindingAdapter> adapters) { this.adapters = adapters; }
+    void withAttachmentHandler(XmlAttachmentHandler handler) { attachments = handler; }
     <T> T bind(BindingXmlReader reader, Class<T> type) {
         advanceToRoot(reader);
         NamespaceFrame scope = NamespaceFrame.enter(reader, null);
@@ -39,30 +46,49 @@ final class XmlBinder {
             String text=readElementText(reader);
             return type==javax.xml.namespace.QName.class?scope.resolveQName(text):XmlBindingMetadata.convert(text,type);
         }
-        List<XmlBindingMetadata.Property> properties = XmlBindingMetadata.properties(type);
+        BindingPlan plan = XmlBindingMetadata.plan(type);
+        List<XmlBindingMetadata.Property> properties = plan.properties;
+        // Everything but the scope is precomputed on the plan; see BindingPlan.directBeanCapable().
+        if (scope == NamespaceFrame.EMPTY && plan.directBeanCapable())
+            return readDirectBean(reader, type, scope, plan);
         Object[] values = new Object[properties.size()];
-        Map<XmlExpandedName, XmlBindingMetadata.Property> children = XmlBindingMetadata.children(type);
-        Map<String, XmlBindingMetadata.Property> localChildren = XmlBindingMetadata.localChildren(type);
-        Map<XmlExpandedName, XmlBindingMetadata.Property> wrappers = XmlBindingMetadata.wrappers(type);
-        XmlBindingMetadata.Property valueProperty = XmlBindingMetadata.valueProperty(type);
-        for (XmlBindingMetadata.Property property : XmlBindingMetadata.attributes(type)) {
+        Map<XmlExpandedName, XmlBindingMetadata.Property> children = plan.children;
+        Map<String, XmlBindingMetadata.Property> localChildren = plan.localChildren;
+        Map<XmlExpandedName, XmlBindingMetadata.Property> wrappers = plan.wrappers;
+        XmlBindingMetadata.Property valueProperty = plan.value;
+        for (XmlBindingMetadata.Property property : plan.attributes) {
             String raw = scope == NamespaceFrame.EMPTY && property.expandedName().namespace().isEmpty()
                     ? reader.attribute(property.xmlName()) : attribute(reader, property.expandedName(), scope);
             if (raw != null) values[property.index()] = unmarshalAdapted(property,
                     property.xmlType()==javax.xml.namespace.QName.class?scope.resolveQName(raw):property.convert(raw));
         }
-        StringBuilder text = new StringBuilder();
+        String text = null;
+        StringBuilder textBuilder = null;
         while (reader.hasNext()) {
             XmlEvent event = reader.next();
-            if (event == XmlEvent.TEXT || event == XmlEvent.CDATA) text.append(reader.text());
+            if (event == XmlEvent.TEXT || event == XmlEvent.CDATA) {
+                String part = reader.text();
+                if (textBuilder != null) textBuilder.append(part);
+                else if (text == null) text = part;
+                else {
+                    if (textBuilder == null) textBuilder = new StringBuilder(text.length() + part.length());
+                    textBuilder.append(text).append(part);
+                    text = null;
+                }
+            }
             else if (event == XmlEvent.START_ELEMENT) {
                 NamespaceFrame childScope = NamespaceFrame.enter(reader, scope);
-                String qualifiedName = reader.name();
-                XmlBindingMetadata.Property property = childScope == NamespaceFrame.EMPTY
-                        && qualifiedName.indexOf(':') < 0
-                        ? localChildren.get(qualifiedName)
-                        : children.get(elementName(qualifiedName, childScope));
+                XmlBindingMetadata.Property property = null;
+                String qualifiedName = null;
+                if (childScope == NamespaceFrame.EMPTY && reader.hasByteNames() && plan.hashDispatch()) {
+                    property = plan.findLocal(reader);
+                } else {
+                    qualifiedName = reader.name();
+                    property = childScope == NamespaceFrame.EMPTY && qualifiedName.indexOf(':') < 0
+                            ? localChildren.get(qualifiedName) : children.get(elementName(qualifiedName, childScope));
+                }
                 if (property == null) {
+                    if (qualifiedName == null) qualifiedName = reader.name();
                     XmlBindingMetadata.Property wrapped=wrappers.get(elementName(qualifiedName,childScope));
                     if(wrapped==null)skipElement(reader);else values[wrapped.index()]=readWrapped(reader,wrapped,childScope);
                 }
@@ -77,14 +103,91 @@ final class XmlBinder {
                 }
             } else if (event == XmlEvent.END_ELEMENT) break;
         }
-        if (valueProperty != null)
+        if (valueProperty != null) {
+            String lexical = textBuilder == null ? (text == null ? "" : text) : textBuilder.append(text == null ? "" : text).toString();
             values[valueProperty.index()] = unmarshalAdapted(valueProperty,
-                    valueProperty.xmlType()==javax.xml.namespace.QName.class?scope.resolveQName(text.toString()):valueProperty.convert(text.toString()));
+                    valueProperty.xmlType()==javax.xml.namespace.QName.class?scope.resolveQName(lexical):valueProperty.convert(lexical));
+        }
         return construct(type, properties, values);
     }
 
+    /**
+     * Allocation-minimal path for the common schema: no namespaces, adapters or wrappers.
+     * The bean is created before reading children and properties are written immediately, so
+     * there is no per-object Object[] staging array or final reflection pass.
+     */
+    private Object readDirectBean(BindingXmlReader reader, Class<?> type, NamespaceFrame scope, BindingPlan plan) {
+        final GeneratedBeanAccess generated = plan.generated;
+        final Object instance;
+        try { instance = generated == null ? XmlBindingMetadata.constructor(type).newInstance() : generated.newInstance(); }
+        catch (ReflectiveOperationException e) { throw new XmlBindingException("Cannot construct " + type.getName(), e); }
+        for (XmlBindingMetadata.Property property : plan.attributes) {
+            byte[] name = property.xmlNameBytes();
+            boolean byteNames = reader.hasByteNames() && name != null;
+            XmlByteSlice rawBytes = byteNames
+                    ? reader.rawAttributeBytes(name) : reader.rawAttributeBytes(property.xmlName());
+            if (rawBytes != null && rawConvertible(property.xmlType()))
+                writeDirect(generated, property, instance, property.convert(rawBytes));
+            else {
+                String raw = byteNames ? reader.attribute(name) : reader.attribute(property.xmlName());
+                if (raw != null) writeDirect(generated, property, instance, property.convert(raw));
+            }
+        }
+        String text = null;
+        StringBuilder textBuilder = null;
+        while (reader.hasNext()) {
+            XmlEvent event = reader.next();
+            if (event == XmlEvent.TEXT || event == XmlEvent.CDATA) {
+                String part = reader.text();
+                if (textBuilder != null) textBuilder.append(part);
+                else if (text == null) text = part;
+                else { textBuilder = new StringBuilder(text.length() + part.length()); textBuilder.append(text).append(part); text = null; }
+            } else if (event == XmlEvent.START_ELEMENT) {
+                NamespaceFrame childScope = NamespaceFrame.enter(reader, scope);
+                XmlBindingMetadata.Property property = childScope == NamespaceFrame.EMPTY
+                        ? (reader.hasByteNames() && plan.hashDispatch()
+                                ? plan.findLocal(reader) : plan.localChildren.get(reader.name()))
+                        : plan.children.get(elementName(reader.name(), childScope));
+                if (property == null) { skipElement(reader); continue; }
+                Object parsed = readProperty(reader, property, childScope);
+                if (property.list()) {
+                    @SuppressWarnings("unchecked") List<Object> list = (List<Object>) (generated == null ? property.read(instance) : generated.read(instance, property.index()));
+                    if (list == null) { list = new ArrayList<Object>(); writeDirect(generated, property, instance, list); }
+                    if (parsed != null || property.nillable()) list.add(parsed == null ? null : unmarshalAdapted(property, parsed));
+                } else if (parsed != null || property.nillable()) {
+                    writeDirect(generated, property, instance, unmarshalAdapted(property, parsed));
+                }
+            } else if (event == XmlEvent.END_ELEMENT) break;
+        }
+        if (plan.value != null) {
+            String lexical = textBuilder == null ? (text == null ? "" : text)
+                    : textBuilder.append(text == null ? "" : text).toString();
+            Object value = plan.value.xmlType() == javax.xml.namespace.QName.class
+                    ? scope.resolveQName(lexical) : plan.value.convert(lexical);
+            writeDirect(generated, plan.value, instance, unmarshalAdapted(plan.value, value));
+        }
+        return instance;
+    }
+
+    private static void writeDirect(XmlBindingMetadata.Property property, Object target, Object value) {
+        try { property.write(target, value); }
+        catch (IllegalAccessException e) { throw new XmlBindingException("Cannot write property " + property.xmlName(), e); }
+    }
+    private static void writeDirect(GeneratedBeanAccess generated, XmlBindingMetadata.Property property, Object target, Object value) {
+        if (generated != null) { generated.write(target, property.index(), value); return; }
+        writeDirect(property, target, value);
+    }
+    /** Types {@code Property.convert(XmlByteSlice)} converts from bytes without building a String. */
+    private static boolean rawConvertible(Class<?> type) {
+        return type == int.class || type == Integer.class || type == long.class || type == Long.class
+                || type == short.class || type == Short.class || type == byte.class || type == Byte.class
+                || type == boolean.class || type == Boolean.class
+                || type == double.class || type == Double.class || type == float.class || type == Float.class;
+    }
+
     private static Class<?> resolveXsiType(BindingXmlReader reader, Class<?> declared, NamespaceFrame scope) {
-        String lexical=attribute(reader,new XmlExpandedName("http://www.w3.org/2001/XMLSchema-instance","type"),scope);
+        if (scope == NamespaceFrame.EMPTY) return declared;
+        String lexical = attribute(reader, XSI_TYPE, scope);
         if(lexical==null||lexical.isEmpty())return declared;
         javax.xml.namespace.QName qname=scope.resolveQName(lexical);
         Class<?> resolved=XmlBindingMetadata.polymorphicTypes(declared).get(new XmlExpandedName(qname.getNamespaceURI(),qname.getLocalPart()));
@@ -104,18 +207,113 @@ final class XmlBinder {
         return list;
     }
 
+    /** Sentinel: the element was not an attachment reference, so the caller resumes the scalar path. */
+    private static final Object NOT_AN_ATTACHMENT = new Object();
+
+    /**
+     * Binds {@code @XmlAttachmentRef} (swaRef) and {@code <xop:Include/>}. Returns
+     * {@link #NOT_AN_ATTACHMENT} when the content turns out to be inline base64, having consumed
+     * at most one event, which is handed back to the scalar path as {@code pending}.
+     */
+    private Object readAttachment(BindingXmlReader reader, XmlBindingMetadata.Property property, NamespaceFrame scope) {
+        if (property.attachmentRef()) {
+            String uri = readElementText(reader);
+            if (uri.isEmpty()) return null;
+            return attachmentValue(property, uri.startsWith("cid:") ? uri.substring(4) : uri);
+        }
+        XmlEvent next = null;
+        boolean peeked = false;
+        if (!property.inlineBinary() && attachments.isXopPackage()) {
+            next = reader.hasNext() ? reader.next() : null;
+            peeked = true;
+            if (next == XmlEvent.START_ELEMENT) {
+                // xmlns:xop is commonly declared on the Include element itself, not on the parent.
+                XmlExpandedName name = elementName(reader.name(), NamespaceFrame.enter(reader, scope));
+                if (XOP_INCLUDE_NAMESPACE.equals(name.namespace()) && "Include".equals(name.localName())) {
+                    String href = reader.attribute("href");
+                    if (href == null || !href.startsWith("cid:")) throw new XmlBindingException("Invalid XOP href");
+                    skipElement(reader);
+                    // skipElement stops at </xop:Include>; the enclosing property element is still open.
+                    consumeToEndElement(reader);
+                    return attachmentValue(property, href.substring(4));
+                }
+            }
+        }
+        // Inline base64. byte[] with nothing consumed goes back to the scalar fast path untouched.
+        if (property.xmlType() == byte[].class)
+            return peeked ? finishScalar(property, scope, readElementText(reader, null, next)) : NOT_AN_ATTACHMENT;
+        String text = readElementText(reader, null, next);
+        if (text.isEmpty()) return null;
+        return attachments.fromBytes(java.util.Base64.getMimeDecoder().decode(text.trim()), property.mimeType());
+    }
+
+    private Object attachmentValue(XmlBindingMetadata.Property property, String contentId) {
+        return attachmentValue(attachments, property, contentId);
+    }
+
+    /** Prefers the provider's own DataHandler so that no byte[] is materialized when it is not needed. */
+    static Object attachmentValue(XmlAttachmentHandler attachments, XmlBindingMetadata.Property property, String contentId) {
+        if (property.xmlType() == byte[].class) return attachments.getAttachmentAsByteArray(contentId);
+        Object handler = attachments.getAttachmentAsDataHandler(contentId);
+        if (handler != null) return handler;
+        byte[] data = attachments.getAttachmentAsByteArray(contentId);
+        return data == null ? null : attachments.fromBytes(data, property.mimeType());
+    }
+
+    static final String XOP_INCLUDE_NAMESPACE = "http://www.w3.org/2004/08/xop/include";
+
+    /** Consumes the remainder of the current element, tolerating whitespace after a child. */
+    private static void consumeToEndElement(BindingXmlReader reader) {
+        int depth = 0;
+        while (reader.hasNext()) {
+            XmlEvent event = reader.next();
+            if (event == XmlEvent.START_ELEMENT) depth++;
+            else if (event == XmlEvent.END_ELEMENT) { if (depth == 0) return; depth--; }
+        }
+        throw new XmlBindingException("Unexpected end of document");
+    }
+
+    private static Object finishScalar(XmlBindingMetadata.Property property, NamespaceFrame scope, String text) {
+        if (text.isEmpty() && property.defaultValue() != null) text = property.defaultValue();
+        if (property.xmlType() == javax.xml.namespace.QName.class) return scope.resolveQName(text);
+        return property.convert(text);
+    }
+
     private Object readProperty(BindingXmlReader reader,XmlBindingMetadata.Property property,NamespaceFrame scope){
         if(isNil(reader,scope)){skipElement(reader);return null;}
-        if(property.hexBinary()||XmlBindingMetadata.scalar(property.xmlType())){
-            String text=readElementText(reader);if(text.isEmpty()&&property.defaultValue()!=null)text=property.defaultValue();
-            if(property.xmlType()==javax.xml.namespace.QName.class)return scope.resolveQName(text);
-            return property.convert(text);
+        boolean binary = property.binary() && attachments != null;
+        if(property.hexBinary()||binary||XmlBindingMetadata.scalar(property.xmlType())){
+            if (binary) {
+                Object attachment = readAttachment(reader, property, scope);
+                if (attachment != NOT_AN_ATTACHMENT) return attachment;
+            }
+            if (rawConvertible(property.xmlType()) && property.defaultValue() == null && reader.hasByteNames()) {
+                XmlEvent first = reader.next();
+                if (first == XmlEvent.TEXT || first == XmlEvent.CDATA) {
+                    XmlByteSlice raw = reader.rawTextBytes();
+                    if (raw != null && !raw.contains((byte) '&')) {
+                        // The flyweight is reader-owned and moves on the next event: keep our own view.
+                        pendingText.reset(raw);
+                        XmlEvent second = reader.hasNext() ? reader.next() : null;
+                        if (second == XmlEvent.END_ELEMENT) {
+                            pendingText.resetAsciiTrimmed(pendingText);
+                            return property.convert(pendingText);
+                        }
+                        // Mixed content after the first segment: resume the general path without losing it.
+                        return finishScalar(property, scope, readElementText(reader, pendingText.decodeUtf8(), second));
+                    }
+                }
+                return finishScalar(property, scope, readElementText(reader, null, first));
+            }
+            return finishScalar(property, scope, readElementText(reader));
         }
         return readObject(reader,property.xmlType(),scope);
     }
 
     private static boolean isNil(BindingXmlReader reader,NamespaceFrame scope){
-        String value=attribute(reader,new XmlExpandedName("http://www.w3.org/2001/XMLSchema-instance","nil"),scope);
+        // No prefix can be bound to the XSI namespace in an empty scope, so no attribute can match.
+        if (scope == NamespaceFrame.EMPTY) return false;
+        String value = attribute(reader, XSI_NIL, scope);
         return "true".equals(value)||"1".equals(value);
     }
 
@@ -127,14 +325,33 @@ final class XmlBinder {
         catch (Exception failure) { throw new XmlBindingException("XmlAdapter unmarshal failed", failure); }
     }
 
-    private static String readElementText(BindingXmlReader reader) {
-        StringBuilder text = new StringBuilder();
-        while (reader.hasNext()) {
-            XmlEvent event = reader.next();
-            if (event == XmlEvent.TEXT || event == XmlEvent.CDATA) text.append(reader.text());
+    private static String readElementText(BindingXmlReader reader) { return readElementText(reader, null, null); }
+
+    /**
+     * Accumulates the text of a scalar element. {@code prefix} is text already consumed by a caller
+     * that peeked ahead, and {@code pending} an event it already read; both may be null.
+     */
+    private static String readElementText(BindingXmlReader reader, String prefix, XmlEvent pending) {
+        String text = prefix;
+        StringBuilder builder = null;
+        XmlEvent event = pending;
+        while (true) {
+            if (event == XmlEvent.TEXT || event == XmlEvent.CDATA) {
+                String part = reader.text();
+                if (builder != null) builder.append(part);
+                else if (text == null) text = part;
+                else {
+                    builder = new StringBuilder(text.length() + part.length());
+                    builder.append(text).append(part);
+                    text = null;
+                }
+            }
             else if (event == XmlEvent.START_ELEMENT)
                 throw new XmlBindingException("Scalar element contains child <" + reader.name() + ">");
-            else if (event == XmlEvent.END_ELEMENT) return text.toString();
+            else if (event == XmlEvent.END_ELEMENT)
+                return builder == null ? (text == null ? "" : text) : builder.append(text == null ? "" : text).toString();
+            if (!reader.hasNext()) break;
+            event = reader.next();
         }
         throw new XmlBindingException("Unexpected end of document");
     }
@@ -149,6 +366,9 @@ final class XmlBinder {
     }
 
     private static String attribute(BindingXmlReader reader, XmlExpandedName expected, NamespaceFrame scope) {
+        // The overwhelmingly common JAXB attribute is unqualified. Avoid entrySet(), which
+        // materializes temporary Entry/Set objects in SmallAttributeMap on every lookup.
+        if (expected.namespace().isEmpty()) return reader.attribute(expected.localName());
         for (Map.Entry<String, String> entry : reader.attributes().entrySet()) {
             String qualified = entry.getKey();
             if (qualified.equals("xmlns") || qualified.startsWith("xmlns:")) continue;
@@ -190,13 +410,17 @@ final class XmlBinder {
 
         static NamespaceFrame enter(BindingXmlReader reader, NamespaceFrame parent) {
             if (!reader.hasNamespaceDeclarations()) return parent == null ? EMPTY : parent;
+            // SmallAttributeMap materializes a fresh entry set per call: reuse one view.
+            java.util.Set<Map.Entry<String, String>> entries = reader.attributes().entrySet();
             int count = 0;
-            for (String name : reader.attributes().keySet())
+            for (Map.Entry<String, String> entry : entries) {
+                String name = entry.getKey();
                 if (name.equals("xmlns") || name.startsWith("xmlns:")) count++;
+            }
             if (count == 0) return parent == null ? EMPTY : parent;
             String[] prefixes = new String[count], uris = new String[count];
             int index = 0;
-            for (Map.Entry<String, String> entry : reader.attributes().entrySet()) {
+            for (Map.Entry<String, String> entry : entries) {
                 String name = entry.getKey();
                 if (!name.equals("xmlns") && !name.startsWith("xmlns:")) continue;
                 prefixes[index] = name.equals("xmlns") ? "" : name.substring(6);

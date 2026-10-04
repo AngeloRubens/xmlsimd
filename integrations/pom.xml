@@ -11,7 +11,12 @@
         <module>../compatibility/java8-baseline-check</module>
         <module>simdxml-jaxb-provider</module>
         <module>simdxml-jaxb-javax-provider</module>
+        <module>simdxml-cxf</module>
+        <module>simdxml-axis2</module>
         <module>server-smoke-javaee8</module>
+        <module>server-smoke-cxf</module>
+        <module>server-smoke-axis2</module>
+        <module>simdxml-weblogic</module>
     </modules>
     <profiles>
         <profile>

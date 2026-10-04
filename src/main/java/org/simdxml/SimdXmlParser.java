@@ -22,6 +22,8 @@ public final class SimdXmlParser extends AbstractXmlParser {
     private SimdXmlStreamReader reusableReader;
     private final XmlBinder binder = new XmlBinder();
     private final PaymentXmlInspector paymentInspector = new PaymentXmlInspector(this);
+    private final FhirXmlInspector fhirInspector = new FhirXmlInspector(this);
+    private final Hl7v2Inspector hl7v2Inspector = new Hl7v2Inspector();
     private final HealthcareFlyweight healthcareFlyweight = new HealthcareFlyweight();
 
     public static SimdXmlParserBuilder builder() { return new SimdXmlParserBuilder(); }
@@ -37,12 +39,18 @@ public final class SimdXmlParser extends AbstractXmlParser {
         this(capacity, maxDepth, verticalOptimizations ? VerticalProfile.AUTO : VerticalProfile.NONE, utf8Validation);
     }
     public SimdXmlParser(int capacity, int maxDepth, VerticalProfile verticalProfile, Utf8Validation utf8Validation) {
+        this(capacity, maxDepth, verticalProfile, utf8Validation, -1);
+    }
+    /** {@code tinyThreshold < 0} keeps {@code -Dorg.simdxml.tiny.threshold}, whose default is 4096. */
+    SimdXmlParser(int capacity, int maxDepth, VerticalProfile verticalProfile, Utf8Validation utf8Validation,
+            int tinyThreshold) {
         super(maxDepth, utf8Validation);
         if (capacity < 1) throw new IllegalArgumentException("capacity must be positive");
         this.capacity = capacity;
         this.verticalProfile = java.util.Objects.requireNonNull(verticalProfile, "verticalProfile");
         this.verticalOptimizations = verticalProfile != VerticalProfile.NONE;
-        this.tinyDocumentThreshold = Math.max(0, Integer.getInteger("org.simdxml.tiny.threshold", 4096));
+        this.tinyDocumentThreshold = tinyThreshold >= 0 ? tinyThreshold
+                : Math.max(0, Integer.getInteger("org.simdxml.tiny.threshold", 4096));
         this.structurals = new StructuralIndex(capacity);
     }
 
@@ -80,6 +88,22 @@ public final class SimdXmlParser extends AbstractXmlParser {
         return paymentInspector.withFlyweight(input, verticalOptimizations, operation);
     }
 
+    /** Projects HL7 v2.x routing and audit fields without constructing a tree. */
+    public Hl7v2MessageInfo inspectHl7v2(byte[] input) {
+        return hl7v2Inspector.inspect(input);
+    }
+
+    /** Projects FHIR XML routing and audit fields without constructing a tree. */
+    public FhirMessageInfo inspectFhir(byte[] input) {
+        return fhirInspector.inspect(input, verticalOptimizations);
+    }
+
+    /** Executes a scoped FHIR projection; the supplied view is valid only inside the callback. */
+    public <R> R withFhirFlyweight(byte[] input, FhirFlyweightFunction<R> operation) {
+        java.util.Objects.requireNonNull(operation, "operation");
+        return fhirInspector.withFlyweight(input, verticalOptimizations, operation);
+    }
+
     /** Dispatches to a configured family; AUTO performs a bounded byte-only probe. */
     public VerticalMessageInfo inspectVertical(byte[] input) {
         return verticalProfile.inspect(this, input);
@@ -108,7 +132,6 @@ public final class SimdXmlParser extends AbstractXmlParser {
     /** Creates a forward-only reader over the first {@code length} bytes. */
     public SimdXmlStreamReader stream(byte[] input, int length) {
         byte[] document = prepareDocument(input, length);
-        prepareStructurals(document, length);
         return new SimdXmlStreamReader(document, length, maxDepth, structurals);
     }
 
@@ -120,7 +143,6 @@ public final class SimdXmlParser extends AbstractXmlParser {
 
     public SimdXmlStreamReader reusableStream(byte[] input, int length) {
         byte[] document = prepareDocument(input, length);
-        prepareStructurals(document, length);
         if (reusableReader == null) reusableReader = new SimdXmlStreamReader(document, length, maxDepth, structurals, true);
         else reusableReader.reset(document, length);
         return reusableReader;
@@ -136,20 +158,18 @@ public final class SimdXmlParser extends AbstractXmlParser {
         }
     }
 
+    /** Validates, then builds the structural index the reader will consume. */
     private byte[] prepareDocument(byte[] input, int length) {
         if (length < 0 || length > input.length) throw new IndexOutOfBoundsException("Invalid length: " + length);
         if (length > capacity) throw new IllegalArgumentException("Document exceeds parser capacity of " + capacity + " bytes");
-        if (utf8Validation == Utf8Validation.STRICT) validateUtf8(input, length);
-        return input.length == length ? input : java.util.Arrays.copyOf(input, length);
+        byte[] document = input.length == length ? input : java.util.Arrays.copyOf(input, length);
+        if (utf8Validation == Utf8Validation.STRICT) validateUtf8(document, length);
+        prepareStructurals(document, length);
+        return document;
     }
 
     public XmlDocument parse(byte[] input, int length) {
-        if (length < 0 || length > input.length) throw new IndexOutOfBoundsException("Invalid length: " + length);
-        if (length > capacity) throw new IllegalArgumentException("Document exceeds parser capacity of " + capacity + " bytes");
-        if (utf8Validation == Utf8Validation.STRICT) validateUtf8(input, length);
-        byte[] document = input.length == length ? input : java.util.Arrays.copyOf(input, length);
-        prepareStructurals(document, length);
-        return new Stage2(document, length).parse();
+        return new Stage2(prepareDocument(input, length), length).parse();
     }
 
     private void prepareStructurals(byte[] document, int length) {

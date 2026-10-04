@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Patient xmlns="http://hl7.org/fhir">
+    <id value="example"/>
+    <text>
+        <status value="generated"/>
+        <div xmlns="http://www.w3.org/1999/xhtml">Example Patient</div>
+    </text>
+    <identifier>
+        <use value="official"/>
+        <value value="12345"/>
+    </identifier>
+    <active value="true"/>
+    <name>
+        <use value="official"/>
+        <family value="Chalmers"/>
+        <given value="Peter"/>
+        <given value="James"/>
+    </name>
+    <telecom>
+        <system value="phone"/>
+        <value value="(03) 5555 6473"/>
+        <use value="work"/>
+    </telecom>
+    <gender value="male"/>
+    <birthDate value="1974-12-25"/>
+    <address>
+        <use value="home"/>
+        <line value="534 Erewhon St"/>
+        <city value="PleasantVille"/>
+        <state value="Vic"/>
+        <postalCode value="3999"/>
+    </address>
+    <maritalStatus>
+        <coding>
+            <system value="http://terminology.hl7.org/CodeSystem/v3-MaritalStatus"/>
+            <code value="M"/>
+        </coding>
+    </maritalStatus>
+    <contact>
+        <relationship>
+            <coding>
+                <system value="http://terminology.hl7.org/CodeSystem/v2-0131"/>
+                <code value="N"/>
+            </coding>
+        </relationship>
+        <name>
+            <family value="Chalmers"/>
+            <given value="Petra"/>
+        </name>
+        <telecom>
+            <system value="phone"/>
+            <value value="(03) 5555 6473"/>
+            <use value="work"/>
+        </telecom>
+        <address>
+            <use value="home"/>
+            <line value="534 Erewhon St"/>
+            <city value="PleasantVille"/>
+            <state value="Vic"/>
+            <postalCode value="3999"/>
+        </address>
+    </contact>
+    <communication>
+        <language>
+            <coding>
+                <system value="urn:ietf:bcp:47"/>
+                <code value="en"/>
+            </coding>
+        </language>
+    </communication>
+    <generalPractitioner>
+        <reference value="Practitioner/example"/>
+        <display value="Dr. Adam Careful"/>
+    </generalPractitioner>
+    <managingOrganization>
+        <reference value="Organization/example"/>
+        <display value="Good Health Clinic"/>
+    </managingOrganization>
+</Patient>

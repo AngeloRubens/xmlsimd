@@ -81,8 +81,8 @@ jobs:
               for backend in baseline scalar unsafe vector; do
                 echo "dataset=$dataset mode=$mode backend=$backend" | tee -a "$result"
                 java "${flags[@]}" -Dorg.simdxml.indexer="$backend" \
-                  -Dorg.simdxml.tiny.threshold=0 -Dorg.simdxml.benchmark.warmups=5 \
-                  -cp "$cp" org.simdxml.RealXmlBenchmark "$dataset" 400 "$mode" | tee -a "$result"
+                  -Dorg.simdxml.tiny.threshold=0 -Dorg.simdxml.benchmark.warmups=1000 \
+                  -cp "$cp" org.simdxml.RealXmlBenchmark "$dataset" 500 "$mode" | tee -a "$result"
               done
             done
           done

@@ -1,0 +1,81 @@
+name: Structural indexer backend study
+
+on:
+  push:
+    branches: [study/openjdk-xml-utf8]
+    paths:
+      - 'src/main/java/org/simdxml/*StructuralIndexer.java'
+      - 'src/main/java/org/simdxml/StructuralIndex.java'
+      - 'src/test/java/org/simdxml/RealXmlBenchmark.java'
+      - 'src/test/resources/**'
+      - '.github/workflows/structural-indexer-study.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/main/java/org/simdxml/*StructuralIndexer.java'
+      - 'src/main/java/org/simdxml/StructuralIndex.java'
+      - 'src/test/java/org/simdxml/RealXmlBenchmark.java'
+      - 'src/test/resources/**'
+      - '.github/workflows/structural-indexer-study.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: structural-indexer-study-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare-existing-backends:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '24'
+          cache: maven
+      - name: Run correctness suite
+        run: mvn -B -ntp test
+      - name: Compile benchmarks and resolve classpath
+        run: |
+          mvn -B -ntp -DskipTests test-compile
+          mvn -B -ntp dependency:build-classpath -DincludeScope=test -Dmdep.outputFile=target/benchmark-classpath.txt
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Compare existing structural indexers in CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p indexer-study-results
+          result=indexer-study-results/results.txt
+          java -version 2>&1 | tee "$result"
+          lscpu | grep 'Model name' | tee -a "$result"
+          printf 'dataset_sha256\n' | tee -a "$result"
+          sha256sum src/test/resources/soap/standard-soap11.xml \
+            src/test/resources/healthcare/ihe-xcpd-soap12.xml \
+            src/test/resources/payments/pain.001.001.09.xml | tee -a "$result"
+          cp="target/classes:target/test-classes:$(cat target/benchmark-classpath.txt)"
+          flags=(-server -XX:ActiveProcessorCount=2 -Xms1500m -Xmx1500m -XX:+AlwaysPreTouch \
+            -XX:+UseParallelGC -XX:+DisableExplicitGC -XX:-UsePerfData --add-modules jdk.incubator.vector)
+          for dataset in src/test/resources/soap/standard-soap11.xml \
+                         src/test/resources/healthcare/ihe-xcpd-soap12.xml \
+                         src/test/resources/payments/pain.001.001.09.xml; do
+            for mode in index stream; do
+              for backend in baseline scalar unsafe vector; do
+                echo "dataset=$dataset mode=$mode backend=$backend" | tee -a "$result"
+                java "${flags[@]}" -Dorg.simdxml.indexer="$backend" \
+                  -Dorg.simdxml.tiny.threshold=0 -Dorg.simdxml.benchmark.warmups=5 \
+                  -cp "$cp" org.simdxml.RealXmlBenchmark "$dataset" 5000 "$mode" | tee -a "$result"
+              done
+            done
+          done
+      - name: Publish CI summary
+        if: always()
+        run: cat indexer-study-results/results.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: structural-indexer-study
+          path: indexer-study-results/results.txt

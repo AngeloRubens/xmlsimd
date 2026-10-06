@@ -52,22 +52,37 @@ jobs:
           result=indexer-study-results/results.txt
           java -version 2>&1 | tee "$result"
           lscpu | grep 'Model name' | tee -a "$result"
-          printf 'dataset_sha256\n' | tee -a "$result"
-          sha256sum src/test/resources/soap/standard-soap11.xml \
-            src/test/resources/healthcare/ihe-xcpd-soap12.xml \
-            src/test/resources/payments/pain.001.001.09.xml | tee -a "$result"
+          python3 - <<'PY'
+          from pathlib import Path
+          cases = {
+              'ascii': '<entry id="184"><name>XML scanner</name><count>12345</count></entry>',
+              'mixed': '<entry id="184"><name>XML café 東京</name><count>12345</count></entry>',
+              'unicode': '<entry id="184"><name>café 東京 🧪</name><count>12345</count></entry>',
+          }
+          target = 256 * 1024
+          for kind, entry in cases.items():
+              body = []
+              size = len('<feed></feed>'.encode())
+              while size < target:
+                  body.append(entry)
+                  size += len(entry.encode('utf-8'))
+              Path(f'indexer-study-results/{kind}.xml').write_text(
+                  '<feed>' + ''.join(body) + '</feed>', encoding='utf-8')
+          PY
+          printf 'generated_dataset_sha256\n' | tee -a "$result"
+          sha256sum indexer-study-results/*.xml | tee -a "$result"
           cp="target/classes:target/test-classes:$(cat target/benchmark-classpath.txt)"
           flags=(-server -XX:ActiveProcessorCount=2 -Xms1500m -Xmx1500m -XX:+AlwaysPreTouch \
             -XX:+UseParallelGC -XX:+DisableExplicitGC -XX:-UsePerfData --add-modules jdk.incubator.vector)
-          for dataset in src/test/resources/soap/standard-soap11.xml \
-                         src/test/resources/healthcare/ihe-xcpd-soap12.xml \
-                         src/test/resources/payments/pain.001.001.09.xml; do
+          for dataset in indexer-study-results/ascii.xml \
+                         indexer-study-results/mixed.xml \
+                         indexer-study-results/unicode.xml; do
             for mode in index stream; do
               for backend in baseline scalar unsafe vector; do
                 echo "dataset=$dataset mode=$mode backend=$backend" | tee -a "$result"
                 java "${flags[@]}" -Dorg.simdxml.indexer="$backend" \
                   -Dorg.simdxml.tiny.threshold=0 -Dorg.simdxml.benchmark.warmups=5 \
-                  -cp "$cp" org.simdxml.RealXmlBenchmark "$dataset" 5000 "$mode" | tee -a "$result"
+                  -cp "$cp" org.simdxml.RealXmlBenchmark "$dataset" 400 "$mode" | tee -a "$result"
               done
             done
           done
@@ -78,4 +93,4 @@ jobs:
         if: always()
         with:
           name: structural-indexer-study
-          path: indexer-study-results/results.txt
+          path: indexer-study-results/

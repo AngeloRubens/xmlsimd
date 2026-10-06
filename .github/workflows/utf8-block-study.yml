@@ -1,16 +1,16 @@
-name: UTF-8 block decoding study
+name: XML grammar SWAR study
 
 on:
   push:
     branches: [study/openjdk-xml-utf8]
     paths:
-      - 'src/test/java/org/simdxml/Utf8BlockDecode*'
+      - 'src/test/java/org/simdxml/Xml*Scan*'
       - 'pom.xml'
       - '.github/workflows/utf8-block-study.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'src/test/java/org/simdxml/Utf8BlockDecode*'
+      - 'src/test/java/org/simdxml/Xml*Scan*'
       - 'pom.xml'
       - '.github/workflows/utf8-block-study.yml'
   workflow_dispatch:
@@ -31,7 +31,7 @@ jobs:
           java-version: '25'
           cache: maven
       - name: Verify decoder equivalence and malformed-input handling
-        run: mvn -B -ntp -Dtest=Utf8BlockDecodeStudyTest test
+        run: mvn -B -ntp -Dtest=Utf8BlockDecodeStudyTest,XmlStructuralScanStudyTest,XmlGrammarScanStudyTest test
       - name: Compile benchmark and resolve runtime classpath
         run: |
           mvn -B -ntp -DskipTests test-compile
@@ -46,7 +46,7 @@ jobs:
           lscpu | grep 'Model name' >> utf8-study-results/environment.txt
           deps="$(cat target/benchmark-classpath.txt)"
           java --add-modules jdk.incubator.vector -cp "target/classes:target/test-classes:$deps" \
-            org.openjdk.jmh.Main 'org.simdxml.Utf8BlockDecodeBenchmark.*' \
+            org.openjdk.jmh.Main 'org.simdxml.XmlGrammarScanBenchmark.*' \
             -f 2 -wi 3 -i 5 -w 1s -r 1s -prof gc -foe true \
             -p targetBytes=4096,65536 -p content=ascii,mixed,unicode \
             -jvmArgsAppend "--add-modules jdk.incubator.vector -XX:+UseG1GC -XX:ActiveProcessorCount=2" \
@@ -63,8 +63,8 @@ jobs:
           except (OSError, json.JSONDecodeError):
               print('Benchmark JSON was not produced; see the uploaded logs.')
               raise SystemExit(0)
-          print('## UTF-8 block decoding study')
-          print('\nJDK 25, JMH two forks, 3 × 1 s warmup, 5 × 1 s measurement, GC profiler. Throughput is decoded documents/s; target size is the generated fixture character count before UTF-8 encoding.\n')
+          print('## XML grammar SWAR study')
+          print('\nJDK 25, JMH two forks, 3 × 1 s warmup, 5 × 1 s measurement, GC profiler. The scanner compares scalar byte classification with SWAR block candidate generation and XML context states.\n')
           print('| Content | Target chars | Method | docs/s ± error | Allocation B/op |')
           print('|---|---:|---|---:|---:|')
           for row in rows:
@@ -76,7 +76,7 @@ jobs:
               alloc = actual.get('gc.alloc.rate.norm') or actual.get('·gc.alloc.rate.norm') or {}
               allocation = alloc.get('score', float('nan'))
               print(f"| {p['content']} | {size:,} | {row['benchmark'].rsplit('.', 1)[-1]} | {score:,.0f} ± {error:,.0f} | {allocation:,.1f} |")
-          print('\nThis microbenchmark screens the byte-to-char ASCII-block technique; it does not claim an end-to-end JDK parser gain. Full logs and JSON are attached as artifacts.')
+          print('\nThis is a grammar-scanner microbenchmark, not an end-to-end parser result. The prototype recognizes XML text, tags, quoted attributes, references, comments, CDATA, processing instructions, and declaration subsets. Full logs and JSON are attached as artifacts.')
           PY
       - uses: actions/upload-artifact@v4
         if: always()

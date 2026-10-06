@@ -5,13 +5,11 @@ on:
     branches: [study/openjdk-xml-utf8]
     paths:
       - 'src/test/java/org/simdxml/Utf8BlockDecode*'
-      - 'pom.xml'
       - '.github/workflows/utf8-block-study.yml'
   pull_request:
     branches: [main]
     paths:
       - 'src/test/java/org/simdxml/Utf8BlockDecode*'
-      - 'pom.xml'
       - '.github/workflows/utf8-block-study.yml'
   workflow_dispatch:
 
